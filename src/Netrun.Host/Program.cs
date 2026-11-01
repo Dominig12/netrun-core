@@ -6,18 +6,23 @@ using var shutdown = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
 try
 {
-    if (args is ["replay", var path])
+    if (args is ["replay" or "replay-sync", var path])
     {
         await using var input = File.OpenRead(path);
-        return await Harness.ReplayAsync(input, Console.Out, Console.Error, shutdown.Token);
+        return args[0] == "replay-sync"
+            ? await Harness.ReplaySynchronizedAsync(input, Console.Out, Console.Error, shutdown.Token)
+            : await Harness.ReplayAsync(input, Console.Out, Console.Error, shutdown.Token);
     }
-    if (args is ["framed", var world, var engine, var binding])
+    if (args is ["framed" or "framed-sync", var world, var engine, var binding])
     {
         // Epochs заданы вручную только для стенда; это не реализация сетевого handshake.
-        return await Harness.FramedAsync(Console.OpenStandardInput(), Console.OpenStandardOutput(),
-            Console.Error, new Epochs(world, engine, binding), shutdown.Token);
+        return args[0] == "framed-sync"
+            ? await Harness.FramedSynchronizedAsync(Console.OpenStandardInput(), Console.OpenStandardOutput(),
+                Console.Error, new Epochs(world, engine, binding), shutdown.Token)
+            : await Harness.FramedAsync(Console.OpenStandardInput(), Console.OpenStandardOutput(),
+                Console.Error, new Epochs(world, engine, binding), shutdown.Token);
     }
-    Console.Error.WriteLine("Usage: Netrun.Host replay FILE.jsonl | framed WORLD_EPOCH ENGINE_EPOCH BINDING_EPOCH");
+    Console.Error.WriteLine("Usage: Netrun.Host replay[-sync] FILE.jsonl | framed[-sync] WORLD_EPOCH ENGINE_EPOCH BINDING_EPOCH");
     return 2;
 }
 catch (OperationCanceledException) when (shutdown.IsCancellationRequested)

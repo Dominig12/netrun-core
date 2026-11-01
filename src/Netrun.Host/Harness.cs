@@ -1,6 +1,4 @@
-using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using Netrun.Core;
 using Netrun.Protocol;
 
@@ -13,25 +11,82 @@ public static class Harness
     /// Читает ограниченные JSONL-записи и выводит результат каждого целого пакета.
     /// Первая запись задаёт epochs только для offline replay; ошибка завершает прогон с кодом 2.
     /// </summary>
-    public static async Task<int> ReplayAsync(Stream input, TextWriter output, TextWriter errors,
-        CancellationToken cancellationToken = default)
+    public static Task<int> ReplayAsync(Stream input, TextWriter output, TextWriter errors,
+        CancellationToken cancellationToken = default) => ReplayCoreAsync(input, output, errors, false, cancellationToken);
+
+    /// <summary>Автономный replay с обязательным snapshot/catch-up; EOF до Ready завершает прогон ошибкой.</summary>
+    public static Task<int> ReplaySynchronizedAsync(Stream input, TextWriter output, TextWriter errors,
+        CancellationToken cancellationToken = default) => ReplayCoreAsync(input, output, errors, true, cancellationToken);
+
+    /// <summary>Общий ограниченный JSONL pipeline; формат режима задаётся до первого входа и не меняется по ошибке.</summary>
+    private static async Task<int> ReplayCoreAsync(Stream input, TextWriter output, TextWriter errors,
+        bool requireSnapshot, CancellationToken cancellationToken)
     {
-        IWorldMirror? mirror = null;
-        ulong outputSequence = 0;
+        OfflineSession? session = null;
         try
         {
             await foreach (var body in ReadJsonLinesAsync(input, cancellationToken))
             {
                 var batch = BatchJson.Decode(body);
-                mirror ??= new WorldMirror(batch.Epochs);
-                var result = mirror.Apply(batch);
-                await output.WriteLineAsync(Encoding.UTF8.GetString(EncodeResult(result, ++outputSequence)).AsMemory(), cancellationToken);
+                session ??= new OfflineSession(batch.Epochs, requireSnapshot);
+                var result = session.Apply(batch);
+                await output.WriteLineAsync(Encoding.UTF8.GetString(result.Body).AsMemory(), cancellationToken);
                 if (result.Status is ApplyStatus.Rejected or ApplyStatus.ResyncRequired)
                     return 2;
             }
-            if (mirror is null)
+            if (session is null)
             {
                 await errors.WriteLineAsync("empty_replay");
+                return 2;
+            }
+            if (!session.IsComplete)
+            {
+                await errors.WriteLineAsync("snapshot_incomplete");
+                return 2;
+            }
+            return 0;
+        }
+        catch (ProtocolException error)
+        {
+            await errors.WriteLineAsync(error.Code);
+            return 2;
+        }
+        finally
+        {
+            session?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Проверяет бинарный framing на переданных потоках без владения ими.
+    /// Epochs задаёт вызывающий стенд; это не handshake или авторизованное подключение DM.
+    /// </summary>
+    public static Task<int> FramedAsync(Stream input, Stream output, TextWriter errors,
+        Epochs epochs, CancellationToken cancellationToken = default) =>
+        FramedCoreAsync(input, output, errors, epochs, false, cancellationToken);
+
+    /// <summary>Framing-стенд с обязательной синхронизацией; не открывает endpoint и не выполняет handshake.</summary>
+    public static Task<int> FramedSynchronizedAsync(Stream input, Stream output, TextWriter errors,
+        Epochs epochs, CancellationToken cancellationToken = default) =>
+        FramedCoreAsync(input, output, errors, epochs, true, cancellationToken);
+
+    /// <summary>Общий бинарный pipeline; неполный снимок нельзя принять как успешный disconnect.</summary>
+    private static async Task<int> FramedCoreAsync(Stream input, Stream output, TextWriter errors,
+        Epochs epochs, bool requireSnapshot, CancellationToken cancellationToken)
+    {
+        using var session = new OfflineSession(epochs, requireSnapshot);
+        try
+        {
+            while (await FramedStream.ReadAsync(input, cancellationToken) is { } body)
+            {
+                var result = session.Apply(BatchJson.Decode(body));
+                await FramedStream.WriteAsync(output, result.Body, cancellationToken);
+                if (result.Status is ApplyStatus.Rejected or ApplyStatus.ResyncRequired)
+                    return 2;
+            }
+            if (!session.IsComplete)
+            {
+                await errors.WriteLineAsync("snapshot_incomplete");
                 return 2;
             }
             return 0;
@@ -42,53 +97,6 @@ public static class Harness
             return 2;
         }
     }
-
-    /// <summary>
-    /// Проверяет бинарный framing на переданных потоках без владения ими.
-    /// Epochs задаёт вызывающий стенд; это не handshake или авторизованное подключение DM.
-    /// </summary>
-    public static async Task<int> FramedAsync(Stream input, Stream output, TextWriter errors,
-        Epochs epochs, CancellationToken cancellationToken = default)
-    {
-        var mirror = new WorldMirror(epochs);
-        ulong outputSequence = 0;
-        try
-        {
-            while (await FramedStream.ReadAsync(input, cancellationToken) is { } body)
-            {
-                var result = mirror.Apply(BatchJson.Decode(body));
-                await FramedStream.WriteAsync(output, EncodeResult(result, ++outputSequence), cancellationToken);
-                if (result.Status is ApplyStatus.Rejected or ApplyStatus.ResyncRequired)
-                    return 2;
-            }
-            return 0;
-        }
-        catch (ProtocolException error)
-        {
-            await errors.WriteLineAsync(error.Code);
-            return 2;
-        }
-    }
-
-    /// <summary>Сериализует диагностику; все счётчики обмена остаются строками даже для больших ulong.</summary>
-    private static byte[] EncodeResult(ApplyResult result, ulong sequence) => JsonSerializer.SerializeToUtf8Bytes(new
-    {
-        kind = "apply_result",
-        output_sequence = sequence.ToString(CultureInfo.InvariantCulture),
-        status = result.Status switch
-        {
-            ApplyStatus.Applied => "applied",
-            ApplyStatus.Duplicate => "duplicate",
-            ApplyStatus.Rejected => "rejected",
-            ApplyStatus.ResyncRequired => "resync_required",
-            _ => throw new InvalidOperationException()
-        },
-        code = result.Code,
-        applied_sequence = result.AppliedSequence.ToString(CultureInfo.InvariantCulture),
-        simulation_time_ds = result.SimulationTimeDs,
-        node_count = result.NodeCount,
-        tracked_count = result.TrackedCount
-    });
 
     /// <summary>Читает JSONL с ограничением строки до выделения неограниченной памяти; поддерживает LF и CRLF.</summary>
     private static async IAsyncEnumerable<byte[]> ReadJsonLinesAsync(Stream input,

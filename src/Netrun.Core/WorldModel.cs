@@ -72,4 +72,6 @@ public sealed record ApplyResult(ApplyStatus Status, string Code, ulong AppliedS
 /// <param name="MaxEntries">Максимум записей одного пакета, 1..128.</param>
 /// <param name="MaxTrackedNodes">Лимит ID, включая tombstones, в одной сессии.</param>
 /// <param name="ReplayWindow">Число хранимых fingerprint; более старые повторы требуют resync.</param>
-public sealed record CoreLimits(int MaxEntries = 128, int MaxTrackedNodes = 10_000, int ReplayWindow = 64);
+/// <param name="MaxSnapshotChunks">Предельное число chunks одного снимка, включая пустые.</param>
+public sealed record CoreLimits(int MaxEntries = 128, int MaxTrackedNodes = 10_000, int ReplayWindow = 64,
+    int MaxSnapshotChunks = 10_000);

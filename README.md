@@ -4,8 +4,9 @@
 построение топологии, маршрутизацию и транспорт машин в отдельный процесс,
 оставив авторизацию и физические эффекты в DM.
 
-**Сейчас реализован первый автономный пакет:** строгие контракты ограниченного
-подмножества фактов, бинарный framing, версионированный mirror узлов и offline
+**Сейчас реализованы два автономных пакета:** строгие контракты ограниченного
+подмножества фактов, бинарный framing, версионированный mirror узлов, полный цикл
+узлового snapshot/chunks/commit и catch-up с отложенной публикацией, offline
 replay. Подключения к игре, графа, маршрутизации, доставки сервисов и native-моста
 пока нет. Проект не готов для production или переключения live-владельца.
 
@@ -21,6 +22,7 @@ dotnet build Netrun.sln -c Release --no-restore
 dotnet test Netrun.sln -c Release --no-build
 dotnet format whitespace Netrun.sln --no-restore --verify-no-changes
 dotnet run --project src/Netrun.Host -c Release --no-build -- replay fixtures/mirror-lifecycle.jsonl
+dotnet run --project src/Netrun.Host -c Release --no-build -- replay-sync fixtures/snapshot-churn.jsonl
 ```
 
 В текущем локальном окружении SDK установлен без изменения PATH:
@@ -35,16 +37,21 @@ Fixture синтетическая: регистрация → удаление 
 `130`. Выход — JSONL с cumulative `applied_sequence` и количеством live/retired ID.
 Входные пользовательские данные в диагностику не печатаются.
 
+Вторая fixture проверяет начальный снимок, повтор chunk, checksum и удаление/
+пересоздание узла в catch-up. Режим `replay-sync` требует полного цикла до Ready;
+конец файла посреди синхронизации — ошибка `snapshot_incomplete`.
+
 Режим `framed WORLD_EPOCH ENGINE_EPOCH BINDING_EPOCH` проверяет тот же pipeline
 на stdin/stdout с 4-байтовыми big-endian длинами. Используйте бинарные потоки,
 а не текстовый PowerShell pipeline. Это тестовый стенд с заданными epochs,
 без handshake, сетевого endpoint и допуска к игровым операциям.
+`framed-sync` добавляет обязательный snapshot/catch-up к этому же бинарному стенду.
 
 ## Модули и расширение
 
 | Проект | Ответственность |
 |---|---|
-| `Netrun.Core` | Типизированные факты, поколения, tombstones, атомарная публикация и ограниченный dedup |
+| `Netrun.Core` | Факты, поколения, tombstones, snapshot/catch-up, atomic publication и bounded dedup |
 | `Netrun.Protocol` | Строгий JSON codec и framing; зависит от доменных контрактов Core |
 | `Netrun.Host` | Composition и автономные runner; зависит от Core и Protocol |
 | `Netrun.Tests` | Контрактные, модульные и интеграционные проверки |
@@ -73,13 +80,14 @@ codec и контрактных тестов.
 
 - [Архитектура и границы первого пакета](docs/architecture.md).
 - [Протокол разработки и лимиты](docs/protocol.md).
+- [Snapshot, catch-up и межъязыковой checksum](docs/synchronization.md).
 - [Проверенные правила DM и baseline](docs/audit.md).
 - [Результаты локальной проверки](docs/verification.md).
 - [Исходный проектный документ](docs/CSHARP_CORE_DESIGN.md) — архивная исходная
   концепция, не отчёт о реализованных возможностях.
 
-Следующий пакет — полноценный snapshot/chunks/commit с проверкой целостности,
-catch-up и сервисными/секторными фактами. После него — shadow-топология и
+Следующий пакет — секторные факты, связность/порядок этажей, base-area identity
+и объявления сервисов; затем экспорт фактов из DM. После этого — shadow-топология и
 маршруты с проверкой паритета. Выбор production ОС/RID, ABI моста, авторизованного
 IPC и численных release gates остаётся открытым; текущая сборка не доказывает
 паритет или разгрузку DM.

@@ -23,3 +23,4 @@ jobs:
       - run: dotnet test Netrun.sln -c Release --no-build
       - run: dotnet format whitespace Netrun.sln --no-restore --verify-no-changes
       - run: dotnet run --project src/Netrun.Host -c Release --no-build -- replay fixtures/mirror-lifecycle.jsonl
+      - run: dotnet run --project src/Netrun.Host -c Release --no-build -- replay-sync fixtures/snapshot-churn.jsonl

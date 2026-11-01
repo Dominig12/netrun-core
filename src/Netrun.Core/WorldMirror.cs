@@ -13,8 +13,6 @@ public sealed class WorldMirror : IWorldMirror
     /// <summary>Последняя версия ID; null Fact сохраняет запрет воскрешения удалённого поколения.</summary>
     private sealed record VersionedNode(ulong Generation, ulong Revision, NodeFact? Fact);
 
-    /// <summary>Строгий Unicode исключает неоднозначный fingerprint из-за замены повреждённых surrogate.</summary>
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     /// <summary>Неизменяемая идентичность одной сессии; resync создаёт новый mirror.</summary>
     private readonly Epochs _epochs;
     /// <summary>Границы памяти и работы одного вызова.</summary>
@@ -26,9 +24,7 @@ public sealed class WorldMirror : IWorldMirror
     /// <summary>Явно зарегистрированные обработчики типов; состав фиксирован на время сессии.</summary>
     private readonly Dictionary<Type, INodeChangeHandler> _handlers = [];
     /// <summary>Ограниченное окно semantic fingerprints уже применённых пакетов.</summary>
-    private readonly Dictionary<ulong, byte[]> _recent = [];
-    /// <summary>Порядок вытеснения fingerprint за O(1), без сканирования истории.</summary>
-    private readonly Queue<ulong> _recentOrder = [];
+    private readonly AppliedReplayWindow _recent;
     /// <summary>Защёлка потери целостности; дальнейшая публикация запрещена.</summary>
     private bool _requiresResync;
     /// <summary>Защищает координатор от повторного входа через ошибочный локальный обработчик; не заменяет single-owner.</summary>
@@ -40,6 +36,8 @@ public sealed class WorldMirror : IWorldMirror
     public int SimulationTimeDs { get; private set; }
     /// <inheritdoc />
     public IReadOnlyDictionary<string, NodeFact> Nodes { get; }
+    /// <summary>Число ID с учётом tombstones для диагностики координатора синхронизации.</summary>
+    internal int TrackedCount => _versions.Count;
 
     /// <summary>Создаёт пустой mirror и фиксирует зависимости; сетевой handshake выполняется вне ядра.</summary>
     /// <param name="epochs">Идентичность offline сессии.</param>
@@ -48,12 +46,14 @@ public sealed class WorldMirror : IWorldMirror
     public WorldMirror(Epochs epochs, CoreLimits? limits = null, IEnumerable<INodeChangeHandler>? additionalHandlers = null)
     {
         ArgumentNullException.ThrowIfNull(epochs);
-        if (!ValidText(epochs.World, 128) || !ValidText(epochs.Engine, 128) || !ValidText(epochs.Binding, 128))
+        if (!NodeFactRules.IsValidText(epochs.World, 128) || !NodeFactRules.IsValidText(epochs.Engine, 128) ||
+            !NodeFactRules.IsValidText(epochs.Binding, 128))
             throw new ArgumentException("Invalid epochs.", nameof(epochs));
         _limits = limits ?? new CoreLimits();
         if (_limits.MaxEntries is < 1 or > 128 || _limits.MaxTrackedNodes < 1 || _limits.ReplayWindow < 1)
             throw new ArgumentOutOfRangeException(nameof(limits));
         _epochs = epochs;
+        _recent = new AppliedReplayWindow(_limits.ReplayWindow);
         Register(new NodeUpsertHandler());
         Register(new NodeRemoveHandler());
         if (additionalHandlers is not null)
@@ -91,7 +91,7 @@ public sealed class WorldMirror : IWorldMirror
             if (change is null || !_handlers.TryGetValue(change.GetType(), out var handler))
                 return Result(ApplyStatus.Rejected, "unsupported_change");
             var mutation = handler.Normalize(change);
-            if (!ValidMutation(mutation))
+            if (!NodeFactRules.IsValidMutation(mutation))
                 return Result(ApplyStatus.Rejected, "invalid_batch");
             mutations[i] = mutation!;
         }
@@ -99,8 +99,7 @@ public sealed class WorldMirror : IWorldMirror
         var fingerprint = Fingerprint(batch, mutations);
         if (batch.Sequence <= AppliedSequence)
         {
-            if (_recent.TryGetValue(batch.Sequence, out var previous) &&
-                CryptographicOperations.FixedTimeEquals(previous, fingerprint))
+            if (_recent.Matches(batch.Sequence, fingerprint))
                 return Result(ApplyStatus.Duplicate, "duplicate");
             return RequireResync("replay_conflict_or_expired");
         }
@@ -149,10 +148,7 @@ public sealed class WorldMirror : IWorldMirror
         }
         AppliedSequence = batch.Sequence;
         SimulationTimeDs = batch.SimulationTimeDs;
-        _recent.Add(batch.Sequence, fingerprint);
-        _recentOrder.Enqueue(batch.Sequence);
-        if (_recentOrder.Count > _limits.ReplayWindow)
-            _recent.Remove(_recentOrder.Dequeue());
+        _recent.Record(batch.Sequence, fingerprint);
         return Result(ApplyStatus.Applied, "applied");
     }
 
@@ -174,30 +170,6 @@ public sealed class WorldMirror : IWorldMirror
     {
         _requiresResync = true;
         return Result(ApplyStatus.ResyncRequired, code);
-    }
-
-    /// <summary>Проверяет длину UTF-16, управляющие символы и корректность Unicode до hashing.</summary>
-    private static bool ValidText(string? value, int maximum)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > maximum || value.Any(char.IsControl))
-            return false;
-        try { _ = StrictUtf8.GetByteCount(value); return true; }
-        catch (EncoderFallbackException) { return false; }
-    }
-
-    /// <summary>Повторно проверяет нормализатор: расширение не может обойти общие инварианты факта.</summary>
-    private static bool ValidMutation(NodeMutation? mutation)
-    {
-        if (mutation is null || !ValidText(mutation.NodeId, 128) || mutation.Generation == 0 || mutation.Revision == 0)
-            return false;
-        if (mutation.Fact is null)
-            return true;
-        var node = mutation.Fact;
-        return node.NodeId == mutation.NodeId && node.Generation == mutation.Generation && node.Revision == mutation.Revision &&
-            node.State is { Position: not null } state && ValidText(state.Address, 256) &&
-            ValidText(state.NodeType, 256) && ValidText(state.SectorId, 256) &&
-            state.Position.X is >= 1 and <= 32767 && state.Position.Y is >= 1 and <= 32767 &&
-            state.Position.Z is >= 1 and <= 4096;
     }
 
     /// <summary>Хэш нормализованных эффектов и причинного порядка; JSON whitespace не влияет на replay.</summary>

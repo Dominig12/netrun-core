@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Netrun.sln --locked-mode
+      - run: dotnet build Netrun.sln -c Release --no-restore
+      - run: dotnet test Netrun.sln -c Release --no-build
+      - run: dotnet format whitespace Netrun.sln --no-restore --verify-no-changes
+      - run: dotnet run --project src/Netrun.Host -c Release --no-build -- replay fixtures/mirror-lifecycle.jsonl

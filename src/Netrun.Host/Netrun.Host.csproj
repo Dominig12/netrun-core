@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Netrun.Core/Netrun.Core.csproj" />
+    <ProjectReference Include="../Netrun.Protocol/Netrun.Protocol.csproj" />
+  </ItemGroup>
+</Project>

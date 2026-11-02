@@ -3,13 +3,16 @@ namespace Netrun.Core;
 /// <summary>Начинает изолированную сборку снимка; один control entry занимает целый входной пакет.</summary>
 /// <param name="SnapshotId">Идентификатор снимка, до 128 символов.</param>
 /// <param name="JournalSequence">Граница журнала изменений мира до начала обхода; ноль разрешён.</param>
-public sealed record SnapshotBegin(string SnapshotId, ulong JournalSequence) : WorldChange;
+/// <param name="ChecksumVersion">1 — исходные узлы, 2 — binary факты, 3 — raw-JSON chain для строкового ABI BYOND.</param>
+public sealed record SnapshotBegin(string SnapshotId, ulong JournalSequence, int ChecksumVersion = 1) : WorldChange;
 
 /// <summary>Ограниченный упорядоченный фрагмент снимка; вложены только node_upsert/node_remove.</summary>
 /// <param name="SnapshotId">Снимок, которому принадлежит chunk.</param>
 /// <param name="ChunkIndex">Непрерывный индекс от 1, независимый от input sequence.</param>
 /// <param name="Changes">До 128 фактов/удалений; порядок входит в checksum.</param>
-public sealed record SnapshotChunk(string SnapshotId, ulong ChunkIndex, IReadOnlyList<WorldChange> Changes) : WorldChange;
+/// <param name="WireDigest">В версии 3 кодек вычисляет SHA-256 точных UTF-8 байтов changes; поле не принимается из JSON.</param>
+public sealed record SnapshotChunk(string SnapshotId, ulong ChunkIndex, IReadOnlyList<WorldChange> Changes,
+    string? WireDigest = null) : WorldChange;
 
 /// <summary>Подтверждает целостность обхода; не публикует mirror до завершения catch-up.</summary>
 /// <param name="SnapshotId">Завершаемый снимок.</param>

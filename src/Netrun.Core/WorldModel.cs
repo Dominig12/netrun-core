@@ -18,7 +18,9 @@ public sealed record Position(int X, int Y, int Z);
 /// <param name="Position">Текущее физическое положение.</param>
 /// <param name="SectorId">Непрозрачный идентификатор сектора из адаптера мира.</param>
 /// <param name="Online">Последний экспортированный факт доступности.</param>
-public sealed record NodeState(string Address, string NodeType, Position Position, string SectorId, bool Online);
+/// <param name="Network">Native-факты построения топологии; null сохраняет исходный контракт простого mirror.</param>
+public sealed record NodeState(string Address, string NodeType, Position? Position, string? SectorId, bool Online,
+    NodeNetworkFacts? Network = null);
 
 /// <summary>Неизменяемый факт об одной инкарнации узла.</summary>
 /// <param name="NodeId">Стабильный логический ID, не DM-ссылка.</param>
@@ -73,5 +75,7 @@ public sealed record ApplyResult(ApplyStatus Status, string Code, ulong AppliedS
 /// <param name="MaxTrackedNodes">Лимит ID, включая tombstones, в одной сессии.</param>
 /// <param name="ReplayWindow">Число хранимых fingerprint; более старые повторы требуют resync.</param>
 /// <param name="MaxSnapshotChunks">Предельное число chunks одного снимка, включая пустые.</param>
+/// <param name="MaxTrackedSectors">Лимит определений секторов вместе с tombstones.</param>
+/// <param name="MaxTrackedServices">Лимит экземпляров сервисов вместе с tombstones.</param>
 public sealed record CoreLimits(int MaxEntries = 128, int MaxTrackedNodes = 10_000, int ReplayWindow = 64,
-    int MaxSnapshotChunks = 10_000);
+    int MaxSnapshotChunks = 10_000, int MaxTrackedSectors = 4096, int MaxTrackedServices = 20_000);

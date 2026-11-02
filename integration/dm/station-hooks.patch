@@ -1,0 +1,916 @@
+diff --git a/.dockerignore b/.dockerignore
+index a4b8a25cdc..41a5b6289e 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -15,6 +15,7 @@ TGS3.json
+ .vs*
+ cfg
+ data
++tmp
+ SQL
+ node_modules
+ tgstation.dmb
+diff --git a/.github/workflows/ci_suite.yml b/.github/workflows/ci_suite.yml
+index bc6e72c22f..84d75aff25 100644
+--- a/.github/workflows/ci_suite.yml
++++ b/.github/workflows/ci_suite.yml
+@@ -20,6 +20,8 @@ permissions:
+   contents: read
+ 
+ env:
++  # Station compile/unit jobs don't package the separately reviewed Core context.
++  NETRUN_CORE_BUILD: '0'
+   # Hermetic tests: worlds per runner. The number of runners is the matrix below.
+   HERMETIC_WORLDS_PER_JOB: 2
+   # Full-map tests: station maps per runner, all started at once.
+diff --git a/Dockerfile b/Dockerfile
+index 0ae4f82be8..c73532493f 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,3 +1,29 @@
++# syntax=docker/dockerfile:1
++ARG NETRUN_DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.403
++ARG NETRUN_DOTNET_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0
++
++# Без explicit --build-context netrun_core=... COPY завершится отказом, а не pull случайного remote repository.
++FROM scratch AS netrun_core
++
++FROM ${NETRUN_DOTNET_SDK_IMAGE} AS netrun-build
++ARG NETRUN_CORE_DIGEST
++WORKDIR /netrun-core
++COPY --from=netrun_core / /netrun-core/
++COPY tools/netrun/build-core-container.sh /build-core-container.sh
++RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils \
++    && /bin/sh /build-core-container.sh
++
++# .NET 10 остаётся в поддерживаемом runtime image, отдельно от glibc старого BYOND.
++FROM ${NETRUN_DOTNET_RUNTIME_IMAGE} AS netrun-host
++ARG NETRUN_CORE_DIGEST
++WORKDIR /app
++COPY --from=netrun-build /netrun-output/host/ ./
++COPY --from=netrun-build /netrun-output/source-manifest.json ./source-manifest.json
++LABEL org.molot.netrun.source-digest=${NETRUN_CORE_DIGEST}
++ENV NETRUN_PORT=18462 NETRUN_SESSION_TOKEN_FILE=/run/secrets/netrun_session_token
++USER app
++ENTRYPOINT ["dotnet", "Netrun.Host.dll", "serve"]
++
+ # base = ubuntu + full apt update
+ FROM ubuntu:xenial AS base
+ 
+@@ -16,7 +42,8 @@ RUN apt-get install -y --no-install-recommends \
+         curl \
+         unzip \
+         make \
+-        libstdc++6:i386
++        libstdc++6:i386 \
++        libcurl3:i386
+ 
+ COPY dependencies.sh .
+ 
+@@ -31,17 +58,30 @@ RUN . ./dependencies.sh \
+     && cd .. \
+     && rm -rf byond byond.zip
+ 
+-# build = byond + tgstation compiled and deployed to /deploy
+-FROM byond AS build
++# Официальный Node24 требует glibc>=2.28: TGUI/Juke нельзя запускать в Xenial runtime.
++# Установленный BYOND содержит cfg/web/bin/man в /usr/local/byond; shared libraries лежат в bin.
++FROM node:24.16.0-bookworm AS build
+ WORKDIR /tgstation
+ 
+-RUN apt-get install -y --no-install-recommends \
+-        curl
++RUN dpkg --add-architecture i386 \
++    && apt-get update \
++    && apt-get install -y --no-install-recommends \
++        libc6:i386 \
++        libstdc++6:i386 \
++        libcurl4:i386 \
++    && rm -rf /var/lib/apt/lists/*
++
++COPY --from=byond /usr/local/byond/ /usr/local/byond/
++ENV BYOND_SYSTEM=/usr/local/byond \
++    PATH="/usr/local/byond/bin:${PATH}" \
++    LD_LIBRARY_PATH=/usr/local/byond/bin
+ 
+ COPY . .
+ 
+-RUN env TG_BOOTSTRAP_NODE_LINUX=1 tools/build/build \
+-    && tools/deploy.sh /deploy
++# Прямой entry point использует pinned Node и не зависит от CRLF/shebang Windows checkout.
++# Core строится отдельным stage; deploy сохраняет штатный набор runtime assets.
++RUN env NETRUN_CORE_BUILD=0 node tools/build/build.js \
++    && /bin/bash tools/deploy.sh /deploy
+ 
+ # rust = base + rustc and i686 target
+ FROM base AS rust
+@@ -70,7 +110,8 @@ RUN . ./dependencies.sh \
+     && env PKG_CONFIG_ALLOW_CROSS=1 ~/.cargo/bin/cargo build --release --target i686-unknown-linux-gnu
+ 
+ # final = byond + runtime deps + rust_g + build
+-FROM byond
++FROM byond AS netrun-station
++ARG NETRUN_CORE_DIGEST
+ WORKDIR /tgstation
+ 
+ RUN apt-get install -y --no-install-recommends \
+@@ -79,7 +120,15 @@ RUN apt-get install -y --no-install-recommends \
+ 
+ COPY --from=build /deploy ./
+ COPY --from=rust_g /rust_g/target/i686-unknown-linux-gnu/release/librust_g.so ./librust_g.so
++COPY --from=netrun-build /netrun-output/libnetrun_bridge.so ./libnetrun_bridge.so
++COPY --from=netrun-build /netrun-output/source-manifest.json ./netrun-core-source.json
++COPY tools/netrun/docker-station-entrypoint.sh ./tools/netrun/docker-station-entrypoint.sh
++LABEL org.molot.netrun.source-digest=${NETRUN_CORE_DIGEST}
++ENV NETRUN_CORE_MODE=external NETRUN_CORE_PORT=18462 \
++    NETRUN_CORE_LIBRARY=/tgstation/libnetrun_bridge.so \
++    NETRUN_CORE_TOKEN_FILE=/run/secrets/netrun_session_token
+ 
+ VOLUME [ "/tgstation/config", "/tgstation/data" ]
+-ENTRYPOINT [ "DreamDaemon", "tgstation.dmb", "-port", "1337", "-trusted", "-close", "-verbose" ]
++ENTRYPOINT [ "/bin/bash", "/tgstation/tools/netrun/docker-station-entrypoint.sh" ]
++CMD [ "tgstation.dmb", "-port", "1337", "-trusted", "-close", "-verbose" ]
+ EXPOSE 1337
+diff --git a/code/game/machinery/telecomms/machine_interactions.dm b/code/game/machinery/telecomms/machine_interactions.dm
+index 5ff0d974a9..ba99d3e834 100644
+--- a/code/game/machinery/telecomms/machine_interactions.dm
++++ b/code/game/machinery/telecomms/machine_interactions.dm
+@@ -100,6 +100,7 @@
+ 			toggled = !toggled
+ 			temp = "-% [src.name] has been [toggled ? "activated" : "deactivated"]. %-"
+ 			update_power()
++			netrun_external_ports_changed()
+ 			return
+ 		if("machine")
+ 			if("id" in params)
+@@ -122,6 +123,7 @@
+ 					return
+ 				network = newnet
+ 				links = list()
++				netrun_external_ports_changed()
+ 				temp = "-% New network tag assigned: \"[network]\" %-"
+ 				return
+ 		if("multitool")
+@@ -143,6 +145,8 @@
+ 
+ 				if(!(T in links))
+ 					LAZYADD(links, T)
++				netrun_external_ports_changed()
++				T.netrun_external_ports_changed()
+ 				temp = "-% Successfully linked with [REF(T)] [T.name] %-"
+ 
+ 			if("Flush" in params)
+@@ -177,6 +181,8 @@
+ 			if(T.links) //lazyrem makes blank list null, which is good but some might cause runtime ee's
+ 				T.links.Remove(src)
+ 			links.Remove(T)
++			netrun_external_ports_changed()
++			T.netrun_external_ports_changed()
+ 		if("freq")
+ 			if("add" in params)
+ 				var/newfreq = input("Specify a new frequency to filter (GHz). Decimals assigned automatically.", src.name, null) as null|num
+@@ -195,6 +201,7 @@
+ 					return
+ 
+ 				LAZYADD(freq_listening, newfreq)
++				netrun_external_ports_changed()
+ 				temp = "-% New frequency filter assigned: \"[newfreq] GHz\" %-"
+ 
+ 			if("remove" in params)
+@@ -203,6 +210,7 @@
+ 				var/x = text2num(params["remove"])
+ 				temp = "-% Removed frequency filter [x] %-"
+ 				freq_listening.Remove(x)
++				netrun_external_ports_changed()
+ 
+ /obj/machinery/telecomms/relay/ui_act(action, params)
+ 	..()
+@@ -212,12 +220,14 @@
+ 				if(!canAccess(usr))
+ 					return
+ 				broadcasting = !broadcasting
++				netrun_external_ports_changed()
+ 				temp = "-% Broadcasting mode changed. %-"
+ 				return
+ 			if("receiving" in params)
+ 				if(!canAccess(usr))
+ 					return
+ 				receiving = !receiving
++				netrun_external_ports_changed()
+ 				temp = "-% Receiving mode changed. %-"
+ 
+ /obj/machinery/telecomms/bus/ui_act(action, params)
+diff --git a/code/game/machinery/telecomms/telecomunications.dm b/code/game/machinery/telecomms/telecomunications.dm
+index bcfaf3328f..0b0185dc17 100644
+--- a/code/game/machinery/telecomms/telecomunications.dm
++++ b/code/game/machinery/telecomms/telecomunications.dm
+@@ -120,7 +120,9 @@ GLOBAL_LIST_EMPTY(telecomms_list)
+ /obj/machinery/telecomms/Destroy()
+ 	GLOB.telecomms_list -= src
+ 	for(var/obj/machinery/telecomms/comm in GLOB.telecomms_list)
+-		comm.links -= src
++		if(src in comm.links)
++			comm.links -= src
++			comm.netrun_external_ports_changed()
+ 	links = list()
+ 	forget_in_consoles()
+ 	return ..()
+@@ -150,6 +152,8 @@ GLOBAL_LIST_EMPTY(telecomms_list)
+ 				if(x in T.autolinkers)
+ 					links |= T
+ 					T.links |= src
++					netrun_external_ports_changed()
++					T.netrun_external_ports_changed()
+ 
+ /obj/machinery/telecomms/update_icon_state()
+ 	if(on)
+@@ -164,6 +168,7 @@ GLOBAL_LIST_EMPTY(telecomms_list)
+ 			icon_state = "[initial(icon_state)]_off"
+ 
+ /obj/machinery/telecomms/proc/update_power()
++	var/was_on = on
+ 	if(toggled)
+ 		// if powered, on. if not powered, off. if too damaged, off
+ 		if(machine_stat &(BROKEN | NOPOWER | EMPED))
+@@ -172,6 +177,8 @@ GLOBAL_LIST_EMPTY(telecomms_list)
+ 			on = TRUE
+ 	else
+ 		on = FALSE
++	if(was_on != on)
++		netrun_external_ports_changed()
+ 
+ /obj/machinery/telecomms/process()
+ 	update_power()
+diff --git a/code/game/world.dm b/code/game/world.dm
+index 50e08d39c5..78485b657d 100644
+--- a/code/game/world.dm
++++ b/code/game/world.dm
+@@ -329,6 +329,8 @@ GLOBAL_LIST(topic_status_cache)
+ 	else
+ 		to_chat(world, "<span class='boldannounce'>Rebooting world...</span>")
+ 		Master.Shutdown()	//run SS shutdowns
++	// Fast reboot пропускает Master.Shutdown; IPC всё равно закрывается до замены мира.
++	SSnetrun?.shutdown_external_core()
+ 	// Ребут по чужой воле (BYOND "Out of resources!") - это краш, а не завершение раунда:
+ 	// ни пометки в GracefulEnding.json, ни метки в чёрном ящике, иначе улику некому будет
+ 	// предъявить. Админский Hardest Restart и клиентский дебаг-рестарт сюда не попадают:
+@@ -382,6 +384,8 @@ GLOBAL_LIST(topic_status_cache)
+ 	..()
+ 
+ /world/Del()
++	// Direct world deletion также обходит subsystem shutdown; callbacks ещё могут писать в log.
++	SSnetrun?.shutdown_external_core()
+ 	if(Master)
+ 		Master.state_snapshot_frozen = TRUE
+ 	mc_state_mark_clean("world.Del")
+diff --git a/code/modules/modular_computers/file_system/programs/ntmonitor.dm b/code/modules/modular_computers/file_system/programs/ntmonitor.dm
+index 094fadce9a..4b2acae617 100644
+--- a/code/modules/modular_computers/file_system/programs/ntmonitor.dm
++++ b/code/modules/modular_computers/file_system/programs/ntmonitor.dm
+@@ -31,9 +31,11 @@
+ 			// NTNet is disabled. Enabling can be done without user prompt
+ 			if(SSnetworks.station_network.setting_disabled)
+ 				SSnetworks.station_network.setting_disabled = FALSE
++				SSnetrun.external_backbone_changed()
+ 				return TRUE
+ 
+ 			SSnetworks.station_network.setting_disabled = TRUE
++			SSnetrun.external_backbone_changed()
+ 			return TRUE
+ 		if("purgelogs")
+ 			if(SSnetworks.station_network)
+diff --git a/code/modules/unit_tests/_unit_tests.dm b/code/modules/unit_tests/_unit_tests.dm
+index b05b0d9210..f25a1bf760 100644
+--- a/code/modules/unit_tests/_unit_tests.dm
++++ b/code/modules/unit_tests/_unit_tests.dm
+@@ -482,6 +482,11 @@
+ #include "netrun_packets.dm"
+ #include "netrun_contracts.dm"
+ #include "netrun_invasions.dm"
++#include "netrun_external_core.dm"
++#include "netrun_external_queries.dm"
++#include "netrun_external_projection.dm"
++#include "netrun_core_live.dm"
++#include "netrun_core_recovery.dm"
+ #include "northstar.dm"
+ #include "ntnet_responses.dm"
+ // #include "ntnetwork_tests.dm"
+diff --git a/modular_bluemoon/code/modules/netrun/core/console.dm b/modular_bluemoon/code/modules/netrun/core/console.dm
+index e3dcf84fc3..3a26945641 100644
+--- a/modular_bluemoon/code/modules/netrun/core/console.dm
++++ b/modular_bluemoon/code/modules/netrun/core/console.dm
+@@ -246,6 +246,11 @@
+ 	if(SSnetworks.station_network.setting_disabled)
+ 		return FALSE
+ 	var/datum/netrun_path_tree/tree = read_path_tree()
++	if(netrun_external_projection_mode())
++		var/datum/netrun_path_tree/external/external_tree = tree
++		if(!istype(external_tree) || !external_tree.external_current())
++			owner.release_path_tree(tree)
++			return FALSE
+ 	var/datum/netrun_topology/graph = SSnetrun.topology
+ 	if(!graph || graph.dirty)
+ 		graph = SSnetrun.ensure_topology()
+@@ -270,6 +275,12 @@
+ 	var/owns_tree = !tree
+ 	if(owns_tree)
+ 		tree = read_path_tree()
++	if(netrun_external_projection_mode())
++		var/datum/netrun_path_tree/external/external_tree = tree
++		. = istype(external_tree) && external_tree.network_available(SSnetrun.get_topology(), network)
++		if(owns_tree)
++			owner.release_path_tree(tree)
++		return
+ 	. = FALSE
+ 	if(!tree.graph_ref)
+ 		// Restricted wireless trees contain only loopback; no station solve is needed.
+@@ -571,6 +582,12 @@
+ 	var/owns_tree = !tree
+ 	if(owns_tree)
+ 		tree = read_path_tree()
++	if(netrun_external_projection_mode())
++		var/datum/netrun_path_tree/external/external_tree = tree
++		. = istype(external_tree) && external_tree.path_available(SSnetrun.get_topology(), node.address)
++		if(owns_tree)
++			owner.release_path_tree(tree)
++		return
+ 	. = !!tree.reached[node.address]
+ 	if(. && (!owner.ui_serializing || tree != owner.ui_routes))
+ 		var/datum/netrun_topology/graph = SSnetrun.topology
+diff --git a/modular_bluemoon/code/modules/netrun/core/machine_routes.dm b/modular_bluemoon/code/modules/netrun/core/machine_routes.dm
+index e99057aa65..47ef83beba 100644
+--- a/modular_bluemoon/code/modules/netrun/core/machine_routes.dm
++++ b/modular_bluemoon/code/modules/netrun/core/machine_routes.dm
+@@ -81,6 +81,9 @@
+ 
+ /// Transport borrows the graph's physical cache and retains only its solve diagnostic.
+ /datum/netrun_machine_transport/proc/path_tree(datum/netrun_topology/graph, datum/component/netrun_node/root, availability_reconciled = FALSE)
++	if(SSnetrun.ensure_external_mode() == "external")
++		var/datum/netrun_external_effects/machines/queries/executor = SSnetrun.external_core?.effects
++		return istype(executor) ? executor.projection_tree(SSnetrun.external_core, root, "machine") : null
+ 	var/builds_before = graph.infrastructure_tree_builds
+ 	var/datum/netrun_path_tree/tree = graph.borrow_infrastructure_tree(root, availability_reconciled)
+ 	tree_builds += graph.infrastructure_tree_builds - builds_before
+@@ -88,6 +91,18 @@
+ 
+ /// Return a mutable request-owned route; boolean checks borrow cached paths directly.
+ /datum/netrun_machine_transport/proc/route(datum/netrun_machine_service/source, datum/netrun_machine_service/recipient, communications, frequency)
++	if(SSnetrun.ensure_external_mode() == "external")
++		var/datum/component/netrun_node/start = source?.resolve_node()
++		var/datum/component/netrun_node/finish = recipient?.resolve_node()
++		if(QDELETED(start) || QDELETED(finish) || !start.is_online() || !finish.is_online())
++			return null
++		var/datum/netrun_path_tree/tree = path_tree(SSnetrun.get_topology(), start)
++		if(!tree?.path_available(SSnetrun.get_topology(), finish.address))
++			return null
++		var/datum/netrun_route/result = new
++		result.hops = tree.addresses_to(finish.address)
++		result.latency = tree.cost_to(finish.address)
++		return result
+ 	var/datum/netrun_machine_path/path = borrowed_path(source, recipient)
+ 	if(isnull(communications))
+ 		communications = netrun_communication_policy(source, recipient?.service_id)
+@@ -103,6 +118,9 @@
+ /// Only infrastructure participates in shortest-path solving. Endpoint attachment and
+ /// cable costs are checked separately, so unrelated leaf movement/power cannot flush it.
+ /datum/netrun_machine_transport/proc/borrowed_path(datum/netrun_machine_service/source, datum/netrun_machine_service/recipient)
++	// Legacy pair routing не имеет права запускать второй engine после выбора C#.
++	if(SSnetrun.ensure_external_mode() == "external")
++		return null
+ 	if(QDELETED(source) || QDELETED(recipient) || QDELETED(source.host) || QDELETED(recipient.host))
+ 		return null
+ 	var/datum/component/netrun_node/start = source.resolve_node()
+@@ -225,6 +243,13 @@
+ 
+ 
+ /datum/netrun_machine_transport/proc/reachable(datum/netrun_machine_service/source, datum/netrun_machine_service/recipient, communications)
++	if(SSnetrun.ensure_external_mode() == "external")
++		var/datum/component/netrun_node/start = source?.resolve_node()
++		var/datum/component/netrun_node/finish = recipient?.resolve_node()
++		if(!SSnetrun.external_core?.ready || QDELETED(source) || QDELETED(recipient) || QDELETED(start) || QDELETED(finish) || !start.is_online() || !finish.is_online())
++			return FALSE
++		var/datum/netrun_path_tree/tree = path_tree(SSnetrun.get_topology(), start)
++		return tree?.path_available(SSnetrun.get_topology(), finish.address) || FALSE
+ 	if(isnull(communications))
+ 		communications = netrun_communication_policy(source, recipient?.service_id)
+ 	return !!(borrowed_path(source, recipient) || (communications && communication_path(source, recipient)))
+diff --git a/modular_bluemoon/code/modules/netrun/core/machine_transport.dm b/modular_bluemoon/code/modules/netrun/core/machine_transport.dm
+index 24b807e47c..75ea19040a 100644
+--- a/modular_bluemoon/code/modules/netrun/core/machine_transport.dm
++++ b/modular_bluemoon/code/modules/netrun/core/machine_transport.dm
+@@ -66,6 +66,14 @@
+ /datum/netrun_machine_transport/proc/dispatch(datum/netrun_machine_service/source, datum/netrun_machine_service/target, datum/netrun_machine_message/message)
+ 	if(QDELETED(message))
+ 		return FALSE
++	// Единственный владелец эффектов выбирается при startup; неизвестный внешний outcome не запускает DM retry.
++	if(SSnetrun.ensure_external_mode() == "external")
++		var/datum/netrun_external_effects/machines/executor = SSnetrun.external_core?.effects
++		if(!SSnetrun.external_core?.ready || !istype(executor))
++			message.failed("внешнее сетевое ядро недоступно")
++			qdel(message)
++			return FALSE
++		return executor.dispatch(source, target, message)
+ 	var/contract_key = message.coalescing_key()
+ 	var/key
+ 	if(!isnull(contract_key) && !QDELETED(source) && !QDELETED(target))
+diff --git a/modular_bluemoon/code/modules/netrun/core/map_view.dm b/modular_bluemoon/code/modules/netrun/core/map_view.dm
+index 3e1bd17b12..8c0942523e 100644
+--- a/modular_bluemoon/code/modules/netrun/core/map_view.dm
++++ b/modular_bluemoon/code/modules/netrun/core/map_view.dm
+@@ -1123,6 +1123,10 @@
+ /// One serialization seam makes incremental work measurable without constructing fake topology.
+ /datum/netrun_map_view/proc/project_entry(datum/component/netrun_node/node, neighbor_count)
+ 	var/list/entry = node.ui_entry(owner)
++	// Cost-only imported edge changes обновляют existing incremental equality без station-wide rebuild.
++	var/datum/netrun_topology/external/external_graph = SSnetrun.topology
++	if(istype(external_graph))
++		entry["link_revision"] = external_graph.external_weight_versions[node.address] || "0"
+ 	entry["network"] = node.last_known_network
+ 	entry["sector"] = node.last_known_sector
+ 	entry["neighbor_count"] = neighbor_count
+diff --git a/modular_bluemoon/code/modules/netrun/core/node.dm b/modular_bluemoon/code/modules/netrun/core/node.dm
+index 2cb0f062c3..d88e4a3621 100644
+--- a/modular_bluemoon/code/modules/netrun/core/node.dm
++++ b/modular_bluemoon/code/modules/netrun/core/node.dm
+@@ -188,6 +188,9 @@
+ 	return ..()
+ 
+ /datum/component/netrun_node/proc/join_network()
++	if(netrun_external_projection_mode())
++		// Anchor/LAN приходят целой C# projection; чтение не запускает native nearest или rebuild.
++		return
+ 	var/datum/netrun_topology/topology = SSnetrun.get_topology()
+ 	var/datum/component/netrun_node/previous_apc = bound_apc
+ 	topology.refresh_node(src)
+@@ -306,6 +309,7 @@
+ 
+ /datum/component/netrun_node/proc/on_state_changed(datum/source)
+ 	SIGNAL_HANDLER
++	export_forwarder_state()
+ 	pending_state_notification = TRUE
+ 	// Native forwarding state (for example APC failure_timer) can use provider
+ 	// icon/UI signals instead of machine_stat. Leaves cannot change other routes.
+@@ -316,10 +320,20 @@
+ 
+ /datum/component/netrun_node/proc/on_availability_changed(datum/source)
+ 	SIGNAL_HANDLER
++	export_forwarder_state()
+ 	pending_state_notification = TRUE
+ 	SSnetrun.queue_availability(src)
+ 	SSnetrun.queue_node(src, TRUE)
+ 
++/// Transit outage попадает в raw journal ДО следующего poll/native invocation, не ожидая фонового node task.
++/// Exporter сравнивает полную signature, поэтому последующий worker pass не создаёт дубликат факта.
++/datum/component/netrun_node/proc/export_forwarder_state()
++	var/datum/netrun_external_core/client = SSnetrun.external_core
++	// Communication ports forwarding принадлежат отдельному overlay; ordinary endpoint proof не меняется.
++	var/communication_port = istype(parent, /obj/machinery/telecomms/hub) || istype(parent, /obj/machinery/telecomms/relay)
++	if(netrun_external_projection_mode() && client && (client.node_is_forwarder(src) || communication_port))
++		client.on_node_changed(src, src, NETRUN_CHANGED_STATE)
++
+ /datum/component/netrun_node/proc/on_storage_changed(datum/source)
+ 	SIGNAL_HANDLER
+ 	queue_presentation(NETRUN_CHANGED_DETAILS)
+diff --git a/modular_bluemoon/code/modules/netrun/core/routes.dm b/modular_bluemoon/code/modules/netrun/core/routes.dm
+index df8f7cec09..aeb201e92f 100644
+--- a/modular_bluemoon/code/modules/netrun/core/routes.dm
++++ b/modular_bluemoon/code/modules/netrun/core/routes.dm
+@@ -58,6 +58,9 @@
+ 	availability_revision = graph?.availability_revision || 0
+ 	transit_availability_revision = graph?.transit_availability_revision || 0
+ 	source_online = !QDELETED(start) && start.is_online()
++	// Direct new(graph,start) также не вправе открыть скрытый DM Dijkstra в production external.
++	if(netrun_external_projection_mode() && graph)
++		return
+ 	if(QDELETED(start) || !graph.nodes[start.address])
+ 		return
+ 	var/list/settled = list()
+@@ -538,6 +541,10 @@
+ 	var/datum/component/netrun_node/source = owner.refresh_route_node(netrun_find_node(owner.host))
+ 	if(source)
+ 		return source
++	if(netrun_external_projection_mode())
++		// Point query возвращает null до ответа; native nearest search не является fallback.
++		var/datum/netrun_external_effects/machines/queries/executor = netrun_external_projection_executor()
++		return executor?.projection_anchor(SSnetrun.external_core, owner)
+ 	var/datum/netrun_topology/graph = SSnetrun.ensure_topology()
+ 	return graph.nearest_apc(owner.physical_turf())
+ 
+@@ -578,6 +585,11 @@
+ 	if(!fresh && owner.ui_routes)
+ 		return owner.ui_routes
+ 	var/datum/component/netrun_node/start = owner.physical_route_source()
++	if(netrun_external_projection_mode())
++		var/datum/netrun_external_effects/machines/queries/executor = netrun_external_projection_executor()
++		executor?.projection_watch(SSnetrun.external_core, start, owner)
++		var/datum/netrun_path_tree/external/external_tree = SSnetrun.get_topology().route_snapshot(start, TRUE)
++		return wireless_zone_restricted() && istype(external_tree) ? external_tree.external_local_copy() : external_tree
+ 	if(wireless_zone_restricted())
+ 		return local_path_tree(start)
+ 	var/datum/netrun_topology/graph = SSnetrun.ensure_topology()
+@@ -612,6 +624,13 @@
+ 
+ /datum/netrun_connection/proc/make_path_tree(use_stored_routes = TRUE)
+ 	var/datum/component/netrun_node/start = owner.physical_route_source()
++	if(netrun_external_projection_mode())
++		var/datum/netrun_external_effects/machines/queries/executor = netrun_external_projection_executor()
++		executor?.projection_watch(SSnetrun.external_core, start, owner)
++		var/datum/netrun_path_tree/external/external_tree = SSnetrun.get_topology().route_snapshot(start, TRUE)
++		if(!istype(external_tree))
++			return external_tree
++		return wireless_zone_restricted() ? external_tree.external_local_copy() : external_tree.copy()
+ 	if(wireless_zone_restricted())
+ 		return local_path_tree(start)
+ 	// A source can move its nested node while being resolved.
+diff --git a/modular_bluemoon/code/modules/netrun/core/service_registry.dm b/modular_bluemoon/code/modules/netrun/core/service_registry.dm
+index eec9b838d0..82ce50749e 100644
+--- a/modular_bluemoon/code/modules/netrun/core/service_registry.dm
++++ b/modular_bluemoon/code/modules/netrun/core/service_registry.dm
+@@ -143,6 +143,9 @@
+ 	var/datum/netrun_machine_transport/transport = SSnetrun.get_machine_transport()
+ 	if(!transport.is_ready())
+ 		return list()
++	if(SSnetrun.ensure_external_mode() == "external")
++		var/datum/netrun_external_effects/machines/queries/executor = SSnetrun.external_core?.effects
++		return istype(executor) ? executor.discovery_lookup(src, destination_id, recipient_tag) : list()
+ 	return select_targets(destination_id, transport.lookup(src, destination_id, recipient_tag, netrun_communication_policy(src, destination_id)))
+ 
+ /// Domain adapters may narrow enumeration using native indexes. Candidates remain
+@@ -161,7 +164,10 @@
+ 		return query
+ 	if(length(resolutions) >= 64)
+ 		return null
+-	query = new(src, destination_id, recipient_tag)
++	if(SSnetrun.ensure_external_mode() == "external")
++		query = new /datum/netrun_machine_resolution/external(src, destination_id, recipient_tag)
++	else
++		query = new(src, destination_id, recipient_tag)
+ 	resolutions[query_key] = query
+ 	return query
+ 
+@@ -241,11 +247,21 @@
+ 	prepare_network()
+ 
+ /datum/netrun_machine_transport/proc/is_ready()
++	if(SSnetrun.ensure_external_mode() == "external")
++		return bootstrap_complete && SSnetrun.external_core?.ready && SSnetrun.initialized && SSatoms.initialized == INITIALIZATION_INNEW_REGULAR
+ 	return bootstrap_complete && !preparing && SSnetrun.initialized && SSatoms.initialized == INITIALIZATION_INNEW_REGULAR
+ 
+ /// Master starts subsystem fire only after its whole initialization loop. The atom
+ /// post-init signal alone is too early: power, research and native links can change.
+ /datum/netrun_machine_transport/proc/prepare_network()
++	// Внешний движок публикует свой graph readiness; DM не прогревает параллельный машинный path cache.
++	if(SSnetrun.ensure_external_mode() == "external")
++		if(!bootstrap_complete && !preparing && SSnetrun.initialized && SSatoms.initialized == INITIALIZATION_INNEW_REGULAR && !Master.initializing_subsystem && Master.current_runlevel)
++			SSnetrun.get_task_scheduler().enqueue("network_bootstrap", src, NETRUN_TASK_BACKGROUND)
++		if(is_ready())
++			wake_resolutions()
++			wake_ready_services()
++		return
+ 	if(preparing || !SSnetrun.initialized || SSatoms.initialized != INITIALIZATION_INNEW_REGULAR || Master.initializing_subsystem || !Master.current_runlevel)
+ 		return
+ 	// Map/shuttle loading can temporarily close readiness after the first bootstrap.
+@@ -269,6 +285,30 @@
+ 		// state here without leaving a runnable continuation polling map loading.
+ 		return TRUE
+ 	preparing = TRUE
++	// Native post-initialize hooks сохраняются; graph/path prewarm выполняет только Host.
++	if(SSnetrun.ensure_external_mode() == "external")
++		if(!bootstrap_complete)
++			SSnetrun.spawn_roundstart_servers()
++			if(!bootstrap_services)
++				bootstrap_services = services.Copy()
++				bootstrap_cursor = 1
++			var/stop = min(length(bootstrap_services), bootstrap_cursor + 31)
++			while(bootstrap_cursor <= stop)
++				var/key = bootstrap_services[bootstrap_cursor++]
++				var/datum/netrun_machine_service/service = services[key]
++				if(!QDELETED(service))
++					service.host_initialized()
++			if(bootstrap_cursor <= length(bootstrap_services))
++				preparing = FALSE
++				return FALSE
++			bootstrap_services = null
++			bootstrap_complete = TRUE
++			bootstrap_at = world.time
++		preparing = FALSE
++		if(is_ready())
++			wake_resolutions()
++			wake_ready_services()
++		return TRUE
+ 	if(!bootstrap_complete)
+ 		SSnetrun.spawn_roundstart_servers()
+ 	var/datum/netrun_topology/graph = SSnetrun.get_topology()
+@@ -502,6 +542,8 @@
+ 		wake_resolutions()
+ 
+ /datum/netrun_machine_transport/proc/index_service(datum/netrun_machine_service/service)
++	// Owner/component replacement и native state важны даже когда recipient tag не поменялся.
++	SSnetrun.external_core?.observe_service(service)
+ 	var/tag = service.service_tag()
+ 	if(service.indexed_tag == tag)
+ 		return
+@@ -522,6 +564,8 @@
+ 	service_revisions[service.service_id] = (service_revisions[service.service_id] || 0) + 1
+ 
+ /datum/netrun_machine_transport/proc/unregister(datum/netrun_machine_service/service)
++	// Экспорт tombstone выполняется до удаления из native registry и потери исходной identity.
++	SSnetrun.external_core?.forget_service(service)
+ 	var/key = service.service_key()
+ 	if(ready_services[key] == service)
+ 		ready_services -= key
+diff --git a/modular_bluemoon/code/modules/netrun/core/subsystem.dm b/modular_bluemoon/code/modules/netrun/core/subsystem.dm
+index eb1deb31a3..52e2d555fe 100644
+--- a/modular_bluemoon/code/modules/netrun/core/subsystem.dm
++++ b/modular_bluemoon/code/modules/netrun/core/subsystem.dm
+@@ -95,6 +95,8 @@ SUBSYSTEM_DEF(netrun)
+ 	if(profile_armed)
+ 		msg += " Cam ms total/max F:[round(camera_feed_scan_ms, 0.1)]/[round(camera_feed_scan_max_ms, 0.1)] R:[round(camera_route_check_ms, 0.1)]/[round(camera_route_check_max_ms, 0.1)]"
+ 	msg += " Pub:[node_publication_batches]/[node_publication_entries]/[network_publication_entries]"
++	if(external_mode == "external" || external_mode == "shadow")
++		msg += " Core:[external_mode]/[external_core?.state || "unavailable"] Ready:[external_core?.ready || FALSE] Ack:[external_core?.last_applied_sequence || "0"] Err:[external_core?.last_error || external_error || "none"]"
+ 	return ..()
+ 
+ /// Repeated changes to one address are one UI event, without an extra node/state task.
+@@ -380,7 +382,7 @@ SUBSYSTEM_DEF(netrun)
+ 		retain_route_interest(packet.interest_route, world.time + NETRUN_NODE_INTEREST_LEASE)
+ 	populate_node_tasks()
+ 	scheduler.enqueue("housekeeping", null, NETRUN_TASK_BACKGROUND)
+-	if(get_topology().dirty)
++	if(!netrun_external_projection_mode() && get_topology().dirty)
+ 		scheduler.enqueue("apc_prebuild", get_topology(), NETRUN_TASK_BACKGROUND)
+ 
+ /datum/controller/subsystem/netrun/proc/execute_task(datum/netrun_task/task)
+@@ -405,6 +407,11 @@ SUBSYSTEM_DEF(netrun)
+ 	next_fire = min(next_fire, world.time)
+ 
+ /datum/controller/subsystem/netrun/proc/refresh_delivery_interval()
++	// Пока идет resync или есть внешняя машинная работа, queued IPC получает bounded проход каждый native tick.
++	var/datum/netrun_external_effects/machines/executor = external_core?.effects
++	if(external_core && external_core.state != "closed" && external_core.state != "resync_required" && (!external_core.ready || length(external_core.journal) >= external_core.journal_head || istype(executor) && (length(executor.pending) || executor.queued_commands())))
++		wait = world.tick_lag
++		return
+ 	if(task_scheduler?.pending() || length(node_publications) || length(network_publications))
+ 		wait = world.tick_lag
+ 		return
+@@ -425,6 +432,9 @@ SUBSYSTEM_DEF(netrun)
+ /datum/controller/subsystem/netrun/fire(resumed = FALSE)
+ 	var/slice_start_usage = TICK_USAGE
+ 	var/slice_started_at = world.time
++	if(!resumed)
++		ensure_external_core()
++		external_core?.tick(64)
+ 	flush_node_publications()
+ 	if(!resumed && initialized)
+ 		get_machine_transport().prepare_network()
+@@ -510,11 +520,14 @@ SUBSYSTEM_DEF(netrun)
+ /datum/controller/subsystem/netrun/proc/get_topology()
+ 	RETURN_TYPE(/datum/netrun_topology)
+ 	if(!topology)
+-		topology = new
++		// Режим выбирается до node.Initialize без IPC; внешний путь не создаёт native builder.
++		topology = netrun_external_projection_mode() ? new /datum/netrun_topology/external : new /datum/netrun_topology
+ 	return topology
+ 
+ /datum/controller/subsystem/netrun/proc/ensure_topology()
+ 	var/datum/netrun_topology/result = get_topology()
++	if(netrun_external_projection_mode())
++		return result
+ 	if(result.deferred_bindings && SSatoms.initialized == INITIALIZATION_INNEW_REGULAR)
+ 		result.invalidate()
+ 	if(result.dirty && !result.rebuilding)
+diff --git a/modular_bluemoon/code/modules/netrun/core/task_scheduler.dm b/modular_bluemoon/code/modules/netrun/core/task_scheduler.dm
+index 2d3355e79d..165b215c5a 100644
+--- a/modular_bluemoon/code/modules/netrun/core/task_scheduler.dm
++++ b/modular_bluemoon/code/modules/netrun/core/task_scheduler.dm
+@@ -124,7 +124,7 @@
+ 	worker.dirty_nodes -= node
+ 	node.processing_update = TRUE
+ 	var/datum/netrun_topology/graph = worker.get_topology()
+-	if(node.pending_physical_update || !node.binding_checked || node.binding_infra_revision != graph.infrastructure_revision)
++	if(!netrun_external_projection_mode() && (node.pending_physical_update || !node.binding_checked || node.binding_infra_revision != graph.infrastructure_revision))
+ 		node.join_network()
+ 	node.reconcile_state()
+ 	node.processing_update = FALSE
+@@ -192,7 +192,7 @@
+ 	if(!limits)
+ 		limits = worker.get_execution_limits()
+ 	var/datum/netrun_topology/graph = worker.get_topology()
+-	if(graph.dirty)
++	if(!netrun_external_projection_mode() && graph.dirty)
+ 		worker.get_task_scheduler().enqueue("apc_prebuild", graph, NETRUN_TASK_BACKGROUND)
+ 	graph.refresh_route_tables(limits.route_refresh_interval, limits.route_expiry_interval)
+ 	if(!graph.dirty && graph.revision != worker.patrol_topology_revision && length(worker.networks))
+@@ -211,6 +211,8 @@
+ 	kind = "apc_prebuild"
+ 
+ /datum/netrun_task/apc_prebuild/advance(datum/controller/subsystem/netrun/worker, datum/netrun_execution_limits/limits)
++	if(netrun_external_projection_mode())
++		return TRUE
+ 	var/datum/netrun_topology/graph = target()
+ 	if(!graph.dirty)
+ 		return TRUE
+diff --git a/modular_bluemoon/code/modules/netrun/core/topology.dm b/modular_bluemoon/code/modules/netrun/core/topology.dm
+index ae797ece46..ef47de4594 100644
+--- a/modular_bluemoon/code/modules/netrun/core/topology.dm
++++ b/modular_bluemoon/code/modules/netrun/core/topology.dm
+@@ -226,6 +226,8 @@
+ 	indexed_revision = infrastructure_revision
+ 
+ /datum/netrun_topology/proc/nearest_apc(turf/position)
++	if(netrun_external_projection_mode())
++		return null
+ 	if(!position)
+ 		return null
+ 	index_infrastructure()
+@@ -261,6 +263,8 @@
+ /// Re-evaluate only a changed binding context, a lost APC, or a formerly empty sector.
+ /// Existing valid bindings survive added nearer APCs and ordinary movement within their root area.
+ /datum/netrun_topology/proc/refresh_node(datum/component/netrun_node/node)
++	if(netrun_external_projection_mode())
++		return
+ 	moved_nodes -= node
+ 	if(QDELETED(node) || QDELETED(node.parent))
+ 		return
+@@ -437,6 +441,8 @@
+ /// Each APC selects its two nearest peers. Prim adds only the shortest
+ /// bridges between remaining components; no artificial hub or relay is involved.
+ /datum/netrun_topology/proc/connect_apcs(list/addresses)
++	if(netrun_external_projection_mode())
++		return
+ 	if(length(addresses) < 2)
+ 		return
+ 	// Exact indexed search: nearby cells first, prune only provably farther cells.
+@@ -495,6 +501,8 @@
+ 
+ /// Prepare expensive APC work without changing published nodes, edges or adjacency.
+ /datum/netrun_topology/proc/advance_apc_prebuild(max_operations = NETRUN_DEFAULT_APC_PREBUILD_OPERATIONS)
++	if(netrun_external_projection_mode())
++		return TRUE
+ 	if(!dirty || rebuilding)
+ 		QDEL_NULL(apc_prebuild)
+ 		return TRUE
+@@ -515,6 +523,8 @@
+ 	return !dirty
+ 
+ /datum/netrun_topology/proc/rebuild()
++	if(netrun_external_projection_mode())
++		return
+ 	if(rebuilding)
+ 		return
+ 	rebuilding = TRUE
+diff --git a/modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm b/modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm
+index 9a31b1b4c1..4e57e3bbd6 100644
+--- a/modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm
++++ b/modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm
+@@ -48,6 +48,9 @@
+ /// Its local segments borrow the existing bounded APC routing cache. The ordinary
+ /// graph remains untouched, so runners, research and atmosphere cannot use it.
+ /datum/netrun_machine_transport/proc/communication_path(datum/netrun_machine_service/source, datum/netrun_machine_service/recipient, frequency)
++	// Communications overlay вычисляется Host; native checks ниже нужны только legacy test mode.
++	if(SSnetrun.ensure_external_mode() == "external")
++		return null
+ 	var/datum/component/netrun_node/start = source?.resolve_node()
+ 	var/datum/component/netrun_node/finish = recipient?.resolve_node()
+ 	if(QDELETED(start) || QDELETED(finish) || !start.is_online() || !finish.is_online())
+diff --git a/tgstation.dme b/tgstation.dme
+index 402d9b7144..c131f3559f 100644
+--- a/tgstation.dme
++++ b/tgstation.dme
+@@ -5525,6 +5525,11 @@
+ #include "modular_bluemoon\code\modules\netrun\integration\cybernetics.dm"
+ #include "modular_bluemoon\code\modules\netrun\integration\datafiles.dm"
+ #include "modular_bluemoon\code\modules\netrun\integration\entity_neural.dm"
++#include "modular_bluemoon\code\modules\netrun\integration\external_core.dm"
++#include "modular_bluemoon\code\modules\netrun\integration\external_effects.dm"
++#include "modular_bluemoon\code\modules\netrun\integration\external_queries.dm"
++#include "modular_bluemoon\code\modules\netrun\integration\external_service_discovery.dm"
++#include "modular_bluemoon\code\modules\netrun\integration\external_projection.dm"
+ #include "modular_bluemoon\code\modules\netrun\integration\implant_access.dm"
+ #include "modular_bluemoon\code\modules\netrun\integration\implant_shards.dm"
+ #include "modular_bluemoon\code\modules\netrun\integration\machine_api.dm"
+diff --git a/tools/build/build.js b/tools/build/build.js
+index 2ef96c7551..0fd88069fd 100755
+--- a/tools/build/build.js
++++ b/tools/build/build.js
+@@ -14,10 +14,11 @@ import fs from 'fs';
+ import path from 'path';
+ import crypto from 'crypto';
+ import { spawn } from 'child_process';
+-import { DreamDaemon, DreamMaker, getDmPath, getDreamDaemonPath } from './lib/byond.js';
++import { DreamMaker, getDmPath, getDreamDaemonPath } from './lib/byond.js';
+ import { yarn } from './lib/yarn.js';
+ import { NanomapsTarget, isLowMemoryBuild } from './lib/nanomaps.js';
+ import Juke from './juke/index.js';
++import { buildCore, runManaged } from '../netrun/core-lifecycle.mjs';
+ 
+ export { NanomapsTarget };
+ 
+@@ -304,6 +305,15 @@ export const DmTestBuildTarget = new Juke.Target({
+   },
+ });
+ 
++/** Dedicated managed live runner получает реальное имя compile artifact без дублирования private define hash. */
++export const DmTestArtifactTarget = new Juke.Target({
++  parameters: [DefineParameter, UnitTestProfileParameter, WarningsAsErrorsParameter],
++  dependsOn: [DmTestBuildTarget],
++  executes: async ({ get }) => {
++    console.log(`NETRUN_TEST_ARTIFACT:${JSON.stringify({ dmb: path.resolve(`${getUnitTestArtifactBase(get)}.dmb`), daemon: await getDreamDaemonPath() })}`);
++  },
++});
++
+ const UNIT_TEST_DURATIONS = 'data/unit_test_durations.json';
+ /** A world that printed "Shutdown complete" and is still alive after this long is hung. */
+ const SHARD_HANG_GRACE_MS = 30000;
+@@ -416,6 +426,8 @@ const runTestWorld = (ddPath, dmbFile, params, outputFile, timeoutMs) => new Pro
+   const sink = fs.createWriteStream(outputFile);
+   const child = spawn(ddPath, [dmbFile, '-close', '-trusted', '-verbose', '-params', params], {
+     stdio: ['ignore', 'pipe', 'pipe'],
++    env: { ...process.env, NETRUN_CORE_MODE: 'dm' },
++    windowsHide: true,
+   });
+   let tail = '';
+   let hangTimer;
+@@ -634,11 +646,10 @@ export const DmTestRunTarget = new Juke.Target({
+       console.log('Success!');
+       return;
+     }
+-    await DreamDaemon(
+-      `${artifactBase}.dmb`,
+-      '-close', '-trusted', '-verbose',
+-      '-params', runWorldParams(logDirectory, [testListParam(get)])
+-    );
++    await Juke.exec(await getDreamDaemonPath(), [
++      `${artifactBase}.dmb`, '-close', '-trusted', '-verbose',
++      '-params', runWorldParams(logDirectory, [testListParam(get)]),
++    ], { env: { ...process.env, NETRUN_CORE_MODE: 'dm' }, windowsHide: true });
+     recordUnitTestDurations([logDirectory]);
+     try {
+       const cleanRun = fs.readFileSync(`data/logs/${logDirectory}/clean_run.lk`, 'utf-8');
+@@ -764,15 +775,21 @@ export const LintTarget = new Juke.Target({
+   dependsOn: [TguiLintTarget],
+ });
+ 
++/** Обычная local сборка включает внешний Host и native bridge; Docker собирает их отдельными stages. */
++export const NetrunCoreTarget = new Juke.Target({
++  executes: () => buildCore(),
++});
++
+ export const BuildTarget = new Juke.Target({
+-  dependsOn: [TguiTarget, TgFontTarget, DmTarget],
++  dependsOn: [TguiTarget, TgFontTarget, DmTarget, NetrunCoreTarget],
+ });
+ 
+ export const ServerTarget = new Juke.Target({
+   dependsOn: [BuildTarget],
+   executes: async ({ get }) => {
+     const port = get(PortParameter) || '1337';
+-    await DreamDaemon(`${DME_NAME}.dmb`, port, '-trusted');
++    const code = await runManaged({ daemon: await getDreamDaemonPath(), dmb: path.resolve(`${DME_NAME}.dmb`), port, noBuild: true });
++    if (code) throw new Juke.ExitCode(code);
+   },
+ });
+ 
+diff --git a/tools/netrun/run-tests.mjs b/tools/netrun/run-tests.mjs
+index ade47d11a6..9ff72a12cf 100644
+--- a/tools/netrun/run-tests.mjs
++++ b/tools/netrun/run-tests.mjs
+@@ -80,7 +80,8 @@ export class NetrunTestSuite {
+     const directory = path.join(this.root, 'code/modules/unit_tests');
+     const manifest = maskDmSource(fs.readFileSync(path.join(directory, '_unit_tests.dm'), 'utf8'));
+     const files = [...manifest.matchAll(/^\s*#include\s+"(netrun[^"/\\]*\.dm)"/gm)]
+-      .map((match) => match[1]);
++      .map((match) => match[1])
++      .filter((name) => name !== 'netrun_core_live.dm');
+     const selected = new Set();
+     for (const file of new Set(files)) {
+       const source = maskDmSource(fs.readFileSync(path.join(directory, file), 'utf8'), true);
+@@ -163,7 +164,7 @@ export class NetrunTestSuite {
+         `--unit-test-profile=${profile}`,
+         '--test-list=tmp/netrun-tests.txt',
+         ...(map ? [`--define=FORCE_MAP ${JSON.stringify(map)}`] : []),
+-      ], this.root);
++      ], this.root, { ...process.env, NETRUN_CORE_MODE: 'dm' });
+       if (!fs.existsSync(resultsFile)) {
+         throw new Error(`The test world did not write a fresh ${path.relative(this.root, resultsFile)}.`);
+       }
+diff --git a/tools/netrun/run-tests.test.mjs b/tools/netrun/run-tests.test.mjs
+index 49d0b2782d..c44af68a6c 100644
+--- a/tools/netrun/run-tests.test.mjs
++++ b/tools/netrun/run-tests.test.mjs
+@@ -28,6 +28,7 @@ test('discover only included, executable Run definitions and deduplicate names',
+   write('code/modules/unit_tests/_unit_tests.dm', `
+ // #include "netrun_missing.dm"
+ #include "netrun_alpha.dm"
++#include "netrun_core_live.dm"
+ #include "netrun_alpha.dm"
+ #include "unrelated.dm"
+ `);
+@@ -43,6 +44,7 @@ var/text = {"
+ /datum/unit_test/netrun_beta/child/Run()
+ `);
+   write('code/modules/unit_tests/netrun_orphan.dm', '/datum/unit_test/netrun_orphan/Run()');
++  write('code/modules/unit_tests/netrun_core_live.dm', '#ifdef NETRUN_CORE_LIVE_TEST\n/datum/unit_test/netrun_core_live/Run()\n#endif');
+   const suite = new NetrunTestSuite(root);
+   assert.deepEqual(suite.discoverDm(), [
+     '/datum/unit_test/netrun_alpha', '/datum/unit_test/netrun_beta/child',

@@ -1,0 +1,451 @@
+{
+  "generated_at_utc": "2026-11-01T23:45:32.6928756+00:00",
+  "layout_seed": 1313166418,
+  "warmup_runs": 2,
+  "measured_runs": 3,
+  "environment": {
+    "framework": ".NET 10.0.14",
+    "os": "Microsoft Windows 10.0.19045",
+    "process_architecture": "X64",
+    "logical_processors": 12,
+    "server_gc": false,
+    "gc_latency_mode": "Interactive",
+    "frequency": 10000000,
+    "allocation_counter": "GC.GetAllocatedBytesForCurrentThread; synchronous measured operations only"
+  },
+  "cases": [
+    {
+      "nodes": 1000,
+      "apc_count": 10,
+      "relay_count": 2,
+      "physical_edges": 1009,
+      "snapshot_operations": 2009,
+      "snapshot_pages": 63,
+      "single_leaf_delta_operations": 2,
+      "single_leaf_delta_pages": 1,
+      "cached_pair_queries": 1000,
+      "discovery_candidates": 1000,
+      "discovery_source_solves": 1,
+      "discovery_tree_cache_hits": 999,
+      "discovery_pages": 16,
+      "runtime_lifecycles": 128,
+      "measurements": {
+        "topology_build": {
+          "median_milliseconds": 4.4667,
+          "median_allocated_bytes": 1636320,
+          "samples": [
+            {
+              "milliseconds": 4.3976,
+              "allocated_bytes": 1636320
+            },
+            {
+              "milliseconds": 4.611,
+              "allocated_bytes": 1636320
+            },
+            {
+              "milliseconds": 4.4667,
+              "allocated_bytes": 1636320
+            }
+          ]
+        },
+        "cached_pair_routes_1000": {
+          "median_milliseconds": 0.3306,
+          "median_allocated_bytes": 240,
+          "samples": [
+            {
+              "milliseconds": 0.4723,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 0.3306,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 0.3303,
+              "allocated_bytes": 240
+            }
+          ]
+        },
+        "uncached_source_tree": {
+          "median_milliseconds": 1.1689,
+          "median_allocated_bytes": 393464,
+          "samples": [
+            {
+              "milliseconds": 1.0192,
+              "allocated_bytes": 393464
+            },
+            {
+              "milliseconds": 9.2464,
+              "allocated_bytes": 393464
+            },
+            {
+              "milliseconds": 1.1689,
+              "allocated_bytes": 393464
+            }
+          ]
+        },
+        "ordinary_discovery_1000_candidates": {
+          "median_milliseconds": 2.1665,
+          "median_allocated_bytes": 620024,
+          "samples": [
+            {
+              "milliseconds": 2.1805,
+              "allocated_bytes": 620024
+            },
+            {
+              "milliseconds": 2.1665,
+              "allocated_bytes": 620024
+            },
+            {
+              "milliseconds": 2.118,
+              "allocated_bytes": 620024
+            }
+          ]
+        },
+        "graph_sync_snapshot_ack": {
+          "median_milliseconds": 2.1903,
+          "median_allocated_bytes": 1567840,
+          "samples": [
+            {
+              "milliseconds": 2.2769,
+              "allocated_bytes": 1567840
+            },
+            {
+              "milliseconds": 2.1903,
+              "allocated_bytes": 1567840
+            },
+            {
+              "milliseconds": 2.171,
+              "allocated_bytes": 1567840
+            }
+          ]
+        },
+        "graph_sync_single_leaf_delta_ack": {
+          "median_milliseconds": 1.111,
+          "median_allocated_bytes": 1208,
+          "samples": [
+            {
+              "milliseconds": 1.111,
+              "allocated_bytes": 1208
+            },
+            {
+              "milliseconds": 17.0261,
+              "allocated_bytes": 1208
+            },
+            {
+              "milliseconds": 0.956,
+              "allocated_bytes": 1208
+            }
+          ]
+        },
+        "runtime_codec_128_lifecycles": {
+          "median_milliseconds": 13.1716,
+          "median_allocated_bytes": 4185128,
+          "samples": [
+            {
+              "milliseconds": 13.1716,
+              "allocated_bytes": 4174672
+            },
+            {
+              "milliseconds": 13.3415,
+              "allocated_bytes": 4225840
+            },
+            {
+              "milliseconds": 13.149,
+              "allocated_bytes": 4185128
+            }
+          ]
+        }
+      }
+    },
+    {
+      "nodes": 5000,
+      "apc_count": 50,
+      "relay_count": 10,
+      "physical_edges": 5083,
+      "snapshot_operations": 10083,
+      "snapshot_pages": 316,
+      "single_leaf_delta_operations": 2,
+      "single_leaf_delta_pages": 1,
+      "cached_pair_queries": 1000,
+      "discovery_candidates": 1000,
+      "discovery_source_solves": 1,
+      "discovery_tree_cache_hits": 999,
+      "discovery_pages": 16,
+      "runtime_lifecycles": 128,
+      "measurements": {
+        "topology_build": {
+          "median_milliseconds": 19.2674,
+          "median_allocated_bytes": 7909888,
+          "samples": [
+            {
+              "milliseconds": 19.2674,
+              "allocated_bytes": 7909888
+            },
+            {
+              "milliseconds": 21.1502,
+              "allocated_bytes": 7909888
+            },
+            {
+              "milliseconds": 18.1736,
+              "allocated_bytes": 7909888
+            }
+          ]
+        },
+        "cached_pair_routes_1000": {
+          "median_milliseconds": 0.0923,
+          "median_allocated_bytes": 240,
+          "samples": [
+            {
+              "milliseconds": 0.0923,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 0.0907,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 6.707,
+              "allocated_bytes": 240
+            }
+          ]
+        },
+        "uncached_source_tree": {
+          "median_milliseconds": 6.2584,
+          "median_allocated_bytes": 1798904,
+          "samples": [
+            {
+              "milliseconds": 5.7118,
+              "allocated_bytes": 1798904
+            },
+            {
+              "milliseconds": 6.2584,
+              "allocated_bytes": 1798904
+            },
+            {
+              "milliseconds": 7.0653,
+              "allocated_bytes": 1798904
+            }
+          ]
+        },
+        "ordinary_discovery_1000_candidates": {
+          "median_milliseconds": 7.8378,
+          "median_allocated_bytes": 2025464,
+          "samples": [
+            {
+              "milliseconds": 7.5125,
+              "allocated_bytes": 2025464
+            },
+            {
+              "milliseconds": 7.8378,
+              "allocated_bytes": 2025464
+            },
+            {
+              "milliseconds": 11.6576,
+              "allocated_bytes": 2025464
+            }
+          ]
+        },
+        "graph_sync_snapshot_ack": {
+          "median_milliseconds": 11.7013,
+          "median_allocated_bytes": 7583000,
+          "samples": [
+            {
+              "milliseconds": 12.4671,
+              "allocated_bytes": 7583000
+            },
+            {
+              "milliseconds": 11.7013,
+              "allocated_bytes": 7583000
+            },
+            {
+              "milliseconds": 11.445,
+              "allocated_bytes": 7583000
+            }
+          ]
+        },
+        "graph_sync_single_leaf_delta_ack": {
+          "median_milliseconds": 7.293,
+          "median_allocated_bytes": 1168,
+          "samples": [
+            {
+              "milliseconds": 8.157,
+              "allocated_bytes": 1168
+            },
+            {
+              "milliseconds": 7.1596,
+              "allocated_bytes": 1168
+            },
+            {
+              "milliseconds": 7.293,
+              "allocated_bytes": 1168
+            }
+          ]
+        },
+        "runtime_codec_128_lifecycles": {
+          "median_milliseconds": 12.8178,
+          "median_allocated_bytes": 3992616,
+          "samples": [
+            {
+              "milliseconds": 12.4673,
+              "allocated_bytes": 3982696
+            },
+            {
+              "milliseconds": 12.8178,
+              "allocated_bytes": 4033712
+            },
+            {
+              "milliseconds": 13.1004,
+              "allocated_bytes": 3992616
+            }
+          ]
+        }
+      }
+    },
+    {
+      "nodes": 10000,
+      "apc_count": 64,
+      "relay_count": 20,
+      "physical_edges": 10111,
+      "snapshot_operations": 20111,
+      "snapshot_pages": 629,
+      "single_leaf_delta_operations": 2,
+      "single_leaf_delta_pages": 1,
+      "cached_pair_queries": 1000,
+      "discovery_candidates": 1000,
+      "discovery_source_solves": 1,
+      "discovery_tree_cache_hits": 999,
+      "discovery_pages": 16,
+      "runtime_lifecycles": 128,
+      "measurements": {
+        "topology_build": {
+          "median_milliseconds": 33.0647,
+          "median_allocated_bytes": 13861408,
+          "samples": [
+            {
+              "milliseconds": 34.6588,
+              "allocated_bytes": 13865704
+            },
+            {
+              "milliseconds": 31.387,
+              "allocated_bytes": 13861408
+            },
+            {
+              "milliseconds": 33.0647,
+              "allocated_bytes": 13861408
+            }
+          ]
+        },
+        "cached_pair_routes_1000": {
+          "median_milliseconds": 0.1017,
+          "median_allocated_bytes": 240,
+          "samples": [
+            {
+              "milliseconds": 0.1153,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 0.1004,
+              "allocated_bytes": 240
+            },
+            {
+              "milliseconds": 0.1017,
+              "allocated_bytes": 240
+            }
+          ]
+        },
+        "uncached_source_tree": {
+          "median_milliseconds": 6.3393,
+          "median_allocated_bytes": 3757400,
+          "samples": [
+            {
+              "milliseconds": 5.8994,
+              "allocated_bytes": 3757400
+            },
+            {
+              "milliseconds": 6.3393,
+              "allocated_bytes": 3757400
+            },
+            {
+              "milliseconds": 6.461,
+              "allocated_bytes": 3757400
+            }
+          ]
+        },
+        "ordinary_discovery_1000_candidates": {
+          "median_milliseconds": 8.0166,
+          "median_allocated_bytes": 3916760,
+          "samples": [
+            {
+              "milliseconds": 7.5802,
+              "allocated_bytes": 3916760
+            },
+            {
+              "milliseconds": 8.0166,
+              "allocated_bytes": 3916760
+            },
+            {
+              "milliseconds": 11.8275,
+              "allocated_bytes": 3916760
+            }
+          ]
+        },
+        "graph_sync_snapshot_ack": {
+          "median_milliseconds": 19.8948,
+          "median_allocated_bytes": 15345360,
+          "samples": [
+            {
+              "milliseconds": 19.2821,
+              "allocated_bytes": 15345360
+            },
+            {
+              "milliseconds": 20.9711,
+              "allocated_bytes": 15345360
+            },
+            {
+              "milliseconds": 19.8948,
+              "allocated_bytes": 15345360
+            }
+          ]
+        },
+        "graph_sync_single_leaf_delta_ack": {
+          "median_milliseconds": 8.2535,
+          "median_allocated_bytes": 1136,
+          "samples": [
+            {
+              "milliseconds": 5.5268,
+              "allocated_bytes": 1136
+            },
+            {
+              "milliseconds": 9.6575,
+              "allocated_bytes": 1136
+            },
+            {
+              "milliseconds": 8.2535,
+              "allocated_bytes": 1136
+            }
+          ]
+        },
+        "runtime_codec_128_lifecycles": {
+          "median_milliseconds": 7.6687,
+          "median_allocated_bytes": 3976232,
+          "samples": [
+            {
+              "milliseconds": 7.6687,
+              "allocated_bytes": 3965776
+            },
+            {
+              "milliseconds": 7.9483,
+              "allocated_bytes": 4017808
+            },
+            {
+              "milliseconds": 7.2417,
+              "allocated_bytes": 3976232
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "result_checksum": 14322
+}

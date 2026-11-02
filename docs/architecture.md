@@ -1,6 +1,8 @@
 # Архитектурные решения автономного ядра
 
-Дата: 2026-11-01. Статус: контракты, mirror и синхронизация узлов, не вся миграция.
+Дата: 2026-11-02. Реализованы mirror, синхронизация, модули сетевой симуляции,
+DM façade и автоматические build/launch paths. Результаты проверок и ограничения
+окружения приведены в [verification.md](verification.md).
 
 ## Направление зависимостей
 
@@ -10,10 +12,10 @@ Host → Protocol → Core
 Tests → Host, Protocol, Core
 ```
 
-Core содержит только доменную модель и правила публикации фактов. JSON,
-файлы, потоки ввода-вывода и CLI расположены снаружи. Дальнейшие Topology,
-Routing и Transport будут использовать доменные представления и игровое время,
-не обращаться к DM-объектам или выполнять физические эффекты.
+Core содержит доменную модель, правила публикации фактов и сетевую симуляцию.
+JSON, файлы, потоки ввода-вывода и CLI расположены снаружи. Topology, Routing,
+Transport, Discovery и Projection используют доменные представления и игровое
+время; не обращаются к DM-объектам и не выполняют физические эффекты.
 
 В первой реализации нет фонового mutable-доступа к mirror. Это позволяет
 обрабатывать причинный порядок без locks и не выдавать частично применённые
@@ -42,9 +44,11 @@ I/O и не изменяет mirror. Некорректный результат
 Повторный вход в Apply запрещён и защищён guard, в том числе при исключении
 обработчика. Это не синхронизация потоков: single-owner остаётся обязательным.
 
-Эта точка расширения предназначена для фактов узлов. Сектора, сервисы и запросы
-не следует кодировать как фальшивые узлы: они получат собственные модели и
-согласованную транзакционную публикацию при расширении протокола.
+Эта точка расширения предназначена для фактов узлов. Сектора и сервисы имеют
+собственные таблицы фактов с общей атомарной публикацией; запросы обслуживаются
+Transport и не кодируются как фальшивые узлы. `INetworkWorldView` даёт единый
+read-only контракт потребителям фактов. `IRouteProvider`/`IRouteCostPolicy`
+отделяют transport от поиска маршрута и правил стоимости.
 
 ## Стоимость и память
 
@@ -73,17 +77,18 @@ Production-зависимостей NuGet нет; тестовые зависи�
 единицы и ownership комментируются и у внутренних полей/методов.
 
 Проверенная локальная среда: Windows 10 x64, SDK установлен в пользовательский
-cache без изменения системного PATH. Будущий Host — отдельный процесс, поэтому
+cache без изменения системного PATH. Host — отдельный процесс, поэтому
 разрядность библиотеки не обязана совпадать с DreamDaemon, но ABI нативного моста
-обязан совпадать. Production ОС/RID и механизм запуска пока не подтверждены.
+обязан совпадать. Целевое окружение — Linux Docker; локальное — Windows процессы.
 CI описывает сборку на Windows и Linux; успешный локальный прогон на Windows
 не означает, что GitHub CI уже выполнен.
 
 ## Что остаётся за пределами пакета
 
-Нет handshake/capability negotiation, сервисных/секторных фактов,
-ACK выходного журнала, reconnect/replay доставки, аутентифицированного IPC,
-DM-экспортера/native-моста, heartbeat, графа, маршрутов и игровых вызовов.
+Loopback handshake, сервисные/секторные факты, output ACK/replay,
+DM-экспортёр, native-мост, heartbeat, граф, маршруты и machine invocation
+реализованы. Полный live cutover, Linux BYOND runtime и численное измерение
+end-to-end стоимости требуют отдельной эксплуатационной проверки.
 
 `WorldSynchronization` отделён от узлового хранилища и управляет snapshot,
 checksum, catch-up и заменой опубликованной модели. Replay-журнал и правила
@@ -94,5 +99,30 @@ checksum, catch-up и заменой опубликованной модели. 
 
 Сохранён исходный `replay` для прямой проверки mirror; `replay-sync` требует
 полного снимка. Автоматического fallback между контрактами нет. Восстановление
-после `resync_required` — новый binding и новый координатор; подключать это к
-live-миру до реализации барьера владения и полного графа нельзя.
+после `resync_required` создаёт новый binding и полный snapshot. Native ownership
+barrier не переносит старые mutating requests в новую сессию.
+
+## Сетевые вычисления и native façade
+
+`NetworkTopology` публикует immutable graphs. Пространственный индекс и
+binding policy выбирают APC; KD/Boruvka строят физический mesh без полного
+попарного перебора. `NetworkAvailability` отделяет питание от геометрии.
+`NetworkRouter` использует weighted Dijkstra и bounded pair cache,
+`SourceRouteTreeProvider` — bounded source cache. Discovery запрашивает
+reachability source tree без материализации пути для каждого кандидата.
+Communication overlay учитывает directed ports, частоту и native relay flags;
+обычный сетевой путь имеет приоритет.
+
+`NetworkTransport` отвечает за очередь, simulation time, ordering, отмены,
+backpressure и invocation lifecycle. `ServiceDiscovery`, `ProjectionBroker` и
+`GraphSynchronizationBroker` делят с ним единый Runtime budget. Стратегии
+стоимости, привязки и route providers расширяются через интерфейсы и композицию;
+Core не хранит native references и не вызывает игровые процедуры.
+
+DM экспортирует raw node/sector/service facts и принимает incremental graph
+operations по 32 за страницу. ACKed baseline и один captured target исключают
+перезапуск whole-graph snapshot при каждом движении leaf. Infrastructure stamps
+отделяют общие forwarding изменения от локальных revisions source/target.
+UI/машины читают импортированные bindings и predecessor trees; штатный external
+режим не запускает DM topology builders, nearest-APC scan или Dijkstra.
+Native authorization и физическое выполнение действия остаются в игре.

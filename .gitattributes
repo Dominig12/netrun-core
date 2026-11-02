@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.sln text eol=crlf
+# Unified diff хранит обязательный пробел перед context lines, в том числе пустыми.
+integration/dm/*.patch -whitespace

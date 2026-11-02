@@ -1,0 +1,10 @@
+{
+    global:
+        netrun_open;
+        netrun_try_enqueue;
+        netrun_poll;
+        netrun_status;
+        netrun_close;
+    local:
+        *;
+};

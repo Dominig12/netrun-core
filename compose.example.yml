@@ -1,0 +1,47 @@
+# Пример для Linux Docker Engine; не применяет конфигурацию к существующему серверу.
+services:
+  byond:
+    # Готовый образ станции должен включать интеграцию NETRUN и BYOND нужной версии.
+    image: ${NETRUN_BYOND_IMAGE:?Set the existing station image built with the NETRUN adapter}
+    ports:
+      - "1337:1337"
+    environment:
+      NETRUN_CORE_MODE: external
+      NETRUN_CORE_PORT: "18462"
+      NETRUN_CORE_LIBRARY: /tgstation/libnetrun_bridge.so
+      NETRUN_CORE_TOKEN_FILE: /run/secrets/netrun_session_token
+    volumes:
+      - type: bind
+        source: ${NETRUN_BRIDGE_LINUX_X86:?Set absolute path to the tested Linux x86 libnetrun_bridge.so}
+        target: /tgstation/libnetrun_bridge.so
+        read_only: true
+    secrets:
+      - netrun_session_token
+
+  netrun-host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Host слушает 127.0.0.1 внутри ТОЙ ЖЕ network namespace, что и DreamDaemon.
+    network_mode: "service:byond"
+    depends_on:
+      byond:
+        condition: service_started
+    environment:
+      NETRUN_PORT: "18462"
+      NETRUN_SESSION_TOKEN_FILE: /run/secrets/netrun_session_token
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    secrets:
+      - netrun_session_token
+
+secrets:
+  netrun_session_token:
+    # Только внешний путь. Значение token не хранится в YAML/.env, аргументах команды или образе.
+    file: ${NETRUN_SESSION_TOKEN_FILE:?Set absolute path to a local session token file outside the checkout}

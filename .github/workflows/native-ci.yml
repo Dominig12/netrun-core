@@ -1,0 +1,68 @@
+name: Native and container
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cross-build:
+    runs-on: windows-latest
+    env:
+      ZIG_VERSION: "0.17.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download official Zig with pinned SHA-256 verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Invoke-RestMethod 'https://ziglang.org/download/index.json'
+          $release = $manifest.PSObject.Properties[$env:ZIG_VERSION].Value
+          $package = $release.'x86_64-windows'
+          $expected = 'b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428'
+          if (!$package -or $package.shasum -ne $expected) { throw 'Official Zig manifest does not match the reviewed toolchain hash.' }
+          $archive = Join-Path $env:RUNNER_TEMP 'netrun-zig.zip'
+          Invoke-WebRequest $package.tarball -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Zig archive checksum mismatch.' }
+          $directory = Join-Path $env:RUNNER_TEMP 'netrun-zig'
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          $executables = @(Get-ChildItem -LiteralPath $directory -Filter zig.exe -Recurse)
+          if ($executables.Count -ne 1) { throw 'Expected exactly one verified Zig executable.' }
+          ./scripts/build-native.ps1 -Target all -ZigPath $executables[0].FullName
+      - name: Run Windows x64 ctypes and cross-target export tests
+        run: python tests/native/test_bridge.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-and-linux-x86
+          path: |
+            native/bin/netrun_bridge.dll
+            native/bin/netrun_bridge-x64.dll
+            native/bin/libnetrun_bridge.so
+
+  linux-x64-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build actual Linux x64 runtime test library
+        run: |
+          mkdir -p native/bin
+          g++ -std=c++17 -shared -fPIC -O2 -Wall -Wextra -Werror -fvisibility=hidden \
+            native/netrun_bridge.cpp -pthread -ldl -Wl,--version-script=native/netrun_bridge.map \
+            -o native/bin/libnetrun_bridge-x64.so
+      - name: Run Linux x64 socket and ABI smoke tests
+        run: python tests/native/test_bridge_linux.py --library native/bin/libnetrun_bridge-x64.so
+
+  host-container-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build standalone non-root .NET Host image
+        run: docker build --tag netrun-host:ci .

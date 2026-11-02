@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -10,17 +9,16 @@ namespace Netrun.Core;
 /// </summary>
 public sealed class WorldMirror : IWorldMirror
 {
-    /// <summary>Последняя версия ID; null Fact сохраняет запрет воскрешения удалённого поколения.</summary>
-    private sealed record VersionedNode(ulong Generation, ulong Revision, NodeFact? Fact);
-
     /// <summary>Неизменяемая идентичность одной сессии; resync создаёт новый mirror.</summary>
     private readonly Epochs _epochs;
     /// <summary>Границы памяти и работы одного вызова.</summary>
     private readonly CoreLimits _limits;
     /// <summary>Полный реестр ID, включая tombstones; не очищается по TTL.</summary>
-    private readonly Dictionary<string, VersionedNode> _versions = new(StringComparer.Ordinal);
-    /// <summary>Только существующие узлы; read-only обёртка не копирует словарь на каждом чтении.</summary>
-    private readonly Dictionary<string, NodeFact> _nodes = new(StringComparer.Ordinal);
+    private readonly VersionedFactTable<NodeFact> _nodeTable = new();
+    /// <summary>Версионированная связность этажей; read-only обёртка не копирует словарь при чтении.</summary>
+    private readonly VersionedFactTable<SectorFact> _sectorTable = new();
+    /// <summary>Объявления сервисов версионируются независимо от host и публикуются в общей транзакции.</summary>
+    private readonly VersionedFactTable<ServiceFact> _serviceTable = new();
     /// <summary>Явно зарегистрированные обработчики типов; состав фиксирован на время сессии.</summary>
     private readonly Dictionary<Type, INodeChangeHandler> _handlers = [];
     /// <summary>Ограниченное окно semantic fingerprints уже применённых пакетов.</summary>
@@ -35,9 +33,13 @@ public sealed class WorldMirror : IWorldMirror
     /// <inheritdoc />
     public int SimulationTimeDs { get; private set; }
     /// <inheritdoc />
-    public IReadOnlyDictionary<string, NodeFact> Nodes { get; }
+    public IReadOnlyDictionary<string, NodeFact> Nodes => _nodeTable.Live;
+    /// <inheritdoc />
+    public IReadOnlyDictionary<string, SectorFact> Sectors => _sectorTable.Live;
+    /// <inheritdoc />
+    public IReadOnlyDictionary<string, ServiceFact> Services => _serviceTable.Live;
     /// <summary>Число ID с учётом tombstones для диагностики координатора синхронизации.</summary>
-    internal int TrackedCount => _versions.Count;
+    internal int TrackedCount => _nodeTable.TrackedCount;
 
     /// <summary>Создаёт пустой mirror и фиксирует зависимости; сетевой handshake выполняется вне ядра.</summary>
     /// <param name="epochs">Идентичность offline сессии.</param>
@@ -50,7 +52,8 @@ public sealed class WorldMirror : IWorldMirror
             !NodeFactRules.IsValidText(epochs.Binding, 128))
             throw new ArgumentException("Invalid epochs.", nameof(epochs));
         _limits = limits ?? new CoreLimits();
-        if (_limits.MaxEntries is < 1 or > 128 || _limits.MaxTrackedNodes < 1 || _limits.ReplayWindow < 1)
+        if (_limits.MaxEntries is < 1 or > 128 || _limits.MaxTrackedNodes < 1 || _limits.ReplayWindow < 1 ||
+            _limits.MaxTrackedSectors < 1 || _limits.MaxTrackedServices < 1)
             throw new ArgumentOutOfRangeException(nameof(limits));
         _epochs = epochs;
         _recent = new AppliedReplayWindow(_limits.ReplayWindow);
@@ -59,7 +62,6 @@ public sealed class WorldMirror : IWorldMirror
         if (additionalHandlers is not null)
             foreach (var handler in additionalHandlers)
                 Register(handler);
-        Nodes = new ReadOnlyDictionary<string, NodeFact>(_nodes);
     }
 
     /// <inheritdoc />
@@ -84,10 +86,16 @@ public sealed class WorldMirror : IWorldMirror
             batch.Entries.Count > _limits.MaxEntries)
             return Result(ApplyStatus.Rejected, "invalid_batch");
 
-        var mutations = new NodeMutation[batch.Entries.Count];
+        var mutations = new NodeMutation?[batch.Entries.Count];
         for (var i = 0; i < batch.Entries.Count; i++)
         {
             var change = batch.Entries[i];
+            if (change is SectorUpsert or SectorRemove or ServiceUpsert or ServiceRemove)
+            {
+                if (!CatalogRules.ValidChange(change))
+                    return Result(ApplyStatus.Rejected, "invalid_batch");
+                continue;
+            }
             if (change is null || !_handlers.TryGetValue(change.GetType(), out var handler))
                 return Result(ApplyStatus.Rejected, "unsupported_change");
             var mutation = handler.Normalize(change);
@@ -110,42 +118,33 @@ public sealed class WorldMirror : IWorldMirror
 
         // Overlay растёт пропорционально пакету, а не всему миру. Tombstones
         // учитываются в capacity и живут до закрытия сессии/binding.
-        var staged = new Dictionary<string, VersionedNode>(StringComparer.Ordinal);
-        var tracked = _versions.Count;
-        foreach (var mutation in mutations)
+        var nodes = _nodeTable.Prepare(_limits.MaxTrackedNodes);
+        var sectors = _sectorTable.Prepare(_limits.MaxTrackedSectors);
+        var services = _serviceTable.Prepare(_limits.MaxTrackedServices);
+        for (var i = 0; i < mutations.Length; i++)
         {
-            var (id, generation, revision, fact) = mutation;
-            if (!staged.TryGetValue(id, out var previous))
-                _versions.TryGetValue(id, out previous);
-            if (previous is not null)
+            string? error;
+            if (mutations[i] is { } mutation)
             {
-                if (generation < previous.Generation || generation == previous.Generation && revision < previous.Revision)
-                    continue;
-                if (generation == previous.Generation)
-                {
-                    if (revision == previous.Revision)
-                    {
-                        if (fact != previous.Fact)
-                            return Result(ApplyStatus.Rejected, "revision_conflict");
-                        continue;
-                    }
-                    if (previous.Fact is null && fact is not null)
-                        return Result(ApplyStatus.Rejected, "generation_retired");
-                }
+                error = nodes.Stage(mutation.NodeId, mutation.Generation, mutation.Revision, mutation.Fact);
+                if (error == "catalog_capacity")
+                    error = "mirror_capacity";
             }
-            else if (++tracked > _limits.MaxTrackedNodes)
-                return Result(ApplyStatus.Rejected, "mirror_capacity");
-            staged[id] = new VersionedNode(generation, revision, fact);
-        }
-
-        foreach (var (id, version) in staged)
-        {
-            _versions[id] = version;
-            if (version.Fact is null)
-                _nodes.Remove(id);
             else
-                _nodes[id] = version.Fact;
+                error = batch.Entries[i] switch
+                {
+                    SectorUpsert upsert => sectors.Stage(upsert.Sector.SectorId, upsert.Sector.Generation, upsert.Sector.Revision, upsert.Sector),
+                    SectorRemove remove => sectors.Stage(remove.SectorId, remove.Generation, remove.Revision, null),
+                    ServiceUpsert upsert => services.Stage(upsert.Service.ServiceId, upsert.Service.Generation, upsert.Service.Revision, upsert.Service),
+                    ServiceRemove remove => services.Stage(remove.ServiceId, remove.Generation, remove.Revision, null),
+                    _ => throw new InvalidOperationException("Validated catalog change is unsupported.")
+                };
+            if (error is not null)
+                return Result(ApplyStatus.Rejected, error);
         }
+        nodes.Commit();
+        sectors.Commit();
+        services.Commit();
         AppliedSequence = batch.Sequence;
         SimulationTimeDs = batch.SimulationTimeDs;
         _recent.Record(batch.Sequence, fingerprint);
@@ -157,13 +156,15 @@ public sealed class WorldMirror : IWorldMirror
     {
         ArgumentNullException.ThrowIfNull(handler);
         if (handler.ChangeType is null || !typeof(WorldChange).IsAssignableFrom(handler.ChangeType) ||
+            handler.ChangeType == typeof(SectorUpsert) || handler.ChangeType == typeof(SectorRemove) ||
+            handler.ChangeType == typeof(ServiceUpsert) || handler.ChangeType == typeof(ServiceRemove) ||
             !_handlers.TryAdd(handler.ChangeType, handler))
             throw new ArgumentException("Invalid or duplicate change handler.", nameof(handler));
     }
 
     /// <summary>Снимок безопасной диагностики; не сохраняет ссылку на входной пакет.</summary>
     private ApplyResult Result(ApplyStatus status, string code) =>
-        new(status, code, AppliedSequence, SimulationTimeDs, _nodes.Count, _versions.Count);
+        new(status, code, AppliedSequence, SimulationTimeDs, Nodes.Count, _nodeTable.TrackedCount);
 
     /// <summary>Закрывает admission данной сессии после gap, несовпадающего или слишком старого replay.</summary>
     private ApplyResult RequireResync(string code)
@@ -173,7 +174,7 @@ public sealed class WorldMirror : IWorldMirror
     }
 
     /// <summary>Хэш нормализованных эффектов и причинного порядка; JSON whitespace не влияет на replay.</summary>
-    private static byte[] Fingerprint(InputBatch batch, IReadOnlyList<NodeMutation> mutations)
+    private static byte[] Fingerprint(InputBatch batch, IReadOnlyList<NodeMutation?> mutations)
     {
         using var buffer = new MemoryStream();
         using (var writer = new BinaryWriter(buffer, Encoding.UTF8, leaveOpen: true))
@@ -184,22 +185,12 @@ public sealed class WorldMirror : IWorldMirror
             writer.Write(batch.Sequence);
             writer.Write(batch.SimulationTimeDs);
             writer.Write(mutations.Count);
-            foreach (var mutation in mutations)
+            for (var i = 0; i < mutations.Count; i++)
             {
-                writer.Write(mutation.NodeId);
-                writer.Write(mutation.Generation);
-                writer.Write(mutation.Revision);
-                writer.Write(mutation.Fact is not null);
-                if (mutation.Fact is { } node)
-                {
-                    writer.Write(node.State.Address);
-                    writer.Write(node.State.NodeType);
-                    writer.Write(node.State.Position.X);
-                    writer.Write(node.State.Position.Y);
-                    writer.Write(node.State.Position.Z);
-                    writer.Write(node.State.SectorId);
-                    writer.Write(node.State.Online);
-                }
+                if (mutations[i] is { } mutation)
+                    WorldFactEncoding.WriteNode(writer, mutation);
+                else
+                    WorldFactEncoding.WriteCatalog(writer, batch.Entries[i]);
             }
         }
         return SHA256.HashData(buffer.GetBuffer().AsSpan(0, checked((int)buffer.Length)));

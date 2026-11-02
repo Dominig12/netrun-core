@@ -1,20 +1,22 @@
 # NETRUN Core
 
-Самостоятельное C#-ядро сетевой симуляции NETRUN для BYOND. Цель проекта — вынести
-построение топологии, маршрутизацию и транспорт машин в отдельный процесс,
-оставив авторизацию и физические эффекты в DM.
+Самостоятельная C# библиотека сетевой симуляции NETRUN и отдельный Host для BYOND.
+C# владеет производным графом, привязками APC, маршрутами, поиском сервисов,
+очередями и сетевыми задержками. DM экспортирует факты мира, проверяет игровые
+права и выполняет конечные действия машин.
 
-**Сейчас реализованы два автономных пакета:** строгие контракты ограниченного
-подмножества фактов, бинарный framing, версионированный mirror узлов, полный цикл
-узлового snapshot/chunks/commit и catch-up с отложенной публикацией, offline
-replay. Подключения к игре, графа, маршрутизации, доставки сервисов и native-моста
-пока нет. Проект не готов для production или переключения live-владельца.
+Реализованы mirror узлов/секторов/сервисов, snapshot с catch-up, пространственная
+топология, routing и source trees, communications overlay, bounded transport,
+invocation lifecycle, discovery, постраничные проекции, авторизованный loopback
+Host с output replay/ACK и неблокирующий native мост. Точный статус игровой
+интеграции приведён в [implementation-status](docs/implementation-status.md).
+Станция использует внешний Core по умолчанию; обычные Windows build/run команды
+и Linux Docker launcher описаны в [инструкции интеграции](integration/dm/README.md).
 
 ## Сборка и проверка
 
-Нужен .NET SDK **10.0.403**, зафиксированный в `global.json`.
-Ядро, протокол и Host используют только стандартную библиотеку; NuGet-зависимости
-есть только у тестов. BYOND и checkout станции для этой сборки не требуются.
+Нужен .NET SDK **10.0.403** из `global.json`. Production проекты используют
+стандартную библиотеку; NuGet-зависимости есть только у тестов.
 
 ```powershell
 dotnet restore Netrun.sln --locked-mode
@@ -25,69 +27,48 @@ dotnet run --project src/Netrun.Host -c Release --no-build -- replay fixtures/mi
 dotnet run --project src/Netrun.Host -c Release --no-build -- replay-sync fixtures/snapshot-churn.jsonl
 ```
 
-В текущем локальном окружении SDK установлен без изменения PATH:
+Для запуска Host задайте `NETRUN_SESSION_TOKEN_FILE` с путём к локальному секрету,
+затем выполните `dotnet run --project src/Netrun.Host -c Release -- serve 18462`.
+Токен не передаётся аргументом CLI и не добавляется в репозиторий. Host слушает
+только IPv4 loopback. DreamDaemon загружает отдельную x86 DLL/SO; Host работает
+обычным процессом Windows или Linux.
 
-```powershell
-$netrunDotnet = "$env:USERPROFILE/.codex/cache/netrun-dotnet/sdk/dotnet.exe"
-& $netrunDotnet test Netrun.sln -c Release
-```
+## Архитектура и расширение
 
-Fixture синтетическая: регистрация → удаление → повтор удаления → новое поколение.
-Успешный replay возвращает exit code `0`; недопустимые данные — `2`, прерывание CLI —
-`130`. Выход — JSONL с cumulative `applied_sequence` и количеством live/retired ID.
-Входные пользовательские данные в диагностику не печатаются.
-
-Вторая fixture проверяет начальный снимок, повтор chunk, checksum и удаление/
-пересоздание узла в catch-up. Режим `replay-sync` требует полного цикла до Ready;
-конец файла посреди синхронизации — ошибка `snapshot_incomplete`.
-
-Режим `framed WORLD_EPOCH ENGINE_EPOCH BINDING_EPOCH` проверяет тот же pipeline
-на stdin/stdout с 4-байтовыми big-endian длинами. Используйте бинарные потоки,
-а не текстовый PowerShell pipeline. Это тестовый стенд с заданными epochs,
-без handshake, сетевого endpoint и допуска к игровым операциям.
-`framed-sync` добавляет обязательный snapshot/catch-up к этому же бинарному стенду.
-
-## Модули и расширение
-
-| Проект | Ответственность |
+| Модуль | Ответственность |
 |---|---|
-| `Netrun.Core` | Факты, поколения, tombstones, snapshot/catch-up, atomic publication и bounded dedup |
-| `Netrun.Protocol` | Строгий JSON codec и framing; зависит от доменных контрактов Core |
-| `Netrun.Host` | Composition и автономные runner; зависит от Core и Protocol |
-| `Netrun.Tests` | Контрактные, модульные и интеграционные проверки |
+| `Netrun.Core` | Предметная модель без зависимости от JSON, IPC или BYOND ABI |
+| `Topology` | Пространственные индексы, binding policies, immutable graph publications |
+| `Routing`, `Communication` | Взвешенные маршруты, source trees, availability и radio edges |
+| `Transport` | Очереди, задержки, отмена, безопасное coalescing и invocation lifecycle |
+| `Discovery`, `Projection` | Асинхронные bounded выборки сервисов, графа и маршрутов |
+| `Runtime` | Последовательный владелец симуляции, логическое время и общий бюджет |
+| `Netrun.Protocol` | Строгая allowlist схема, framing и immutable payload codec |
+| `Netrun.Host` | Composition, локальная сессия, replay/ACK и автономные runners |
+| `native` | Неблокирующая транспортная граница BYOND |
 
-Core не зависит от сериализации, IPC, DM ABI или Host. Один последовательный
-владелец вызывает `Apply`; `Nodes` — read-only **live view** для этого же потока,
-а не thread-safe immutable snapshot.
+Горячие пути используют индексы и bounded caches. Relay backbone представлен
+неявным bucket без квадратичной материализации clique. Изменение питания
+обновляет availability отдельно от геометрии. Новые обработчики узлов реализуют
+`NodeChangeHandler<TChange>`, стоимости маршрутов — `IRouteCostPolicy`.
+Binding поведение задаётся явной policy. XML-комментарии публичных методов и
+полей проверяются сборкой production проектов.
 
-Публичная граница чтения/применения — `IWorldMirror`. Новый тип записи **модуля
-узлов** можно добавить наследованием от `WorldChange` и
-`NodeChangeHandler<TChange>`, затем явно передать в `additionalHandlers`.
-Обработчик без побочных эффектов превращает запись в `NodeMutation` с полным
-фактом или tombstone. Центральные проверки поколений, версий, лимитов и публикации
-сохраняются. Пример рабочего расширения — `ExtensibilityTests.cs`.
-
-Регистрация фиксируется при создании сессии; lookup по точному типу выполняется
-за O(1). Reflection, динамическая загрузка сборок и DI-container не нужны.
-Новые доменные подсистемы будут отдельными модулями с собственными контрактами,
-а не обработчиками, напрямую изменяющими внутренности mirror.
-
-Сетевая схема намеренно остаётся allowlist. Регистрация C#-обработчика не
-разрешает произвольный wire-kind: изменение схемы требует отдельной реализации
-codec и контрактных тестов.
+Mutable runtime имеет одного последовательного владельца. Публикации графа и
+значения неизменяемы; live view mirror не является thread-safe snapshot.
+Подключение C# обработчика само по себе не расширяет wire allowlist и не
+разрешает новые игровые эффекты.
 
 ## Документация
 
-- [Архитектура и границы первого пакета](docs/architecture.md).
-- [Протокол разработки и лимиты](docs/protocol.md).
-- [Snapshot, catch-up и межъязыковой checksum](docs/synchronization.md).
-- [Проверенные правила DM и baseline](docs/audit.md).
-- [Результаты локальной проверки](docs/verification.md).
-- [Исходный проектный документ](docs/CSHARP_CORE_DESIGN.md) — архивная исходная
-  концепция, не отчёт о реализованных возможностях.
+- [Архитектура](docs/architecture.md) и [состояние реализации](docs/implementation-status.md).
+- [Runtime протокол](docs/protocol-runtime.md), [базовая схема](docs/protocol.md)
+  и [snapshot/catch-up](docs/synchronization.md).
+- [DM адаптер](docs/external-dm.md), [native мост](docs/native.md)
+  и [развёртывание](docs/deployment.md).
+- [Правила DM](docs/audit.md) и [проверки](docs/verification.md).
+- [Исходный проектный документ](docs/CSHARP_CORE_DESIGN.md) — архивная концепция.
 
-Следующий пакет — секторные факты, связность/порядок этажей, base-area identity
-и объявления сервисов; затем экспорт фактов из DM. После этого — shadow-топология и
-маршруты с проверкой паритета. Выбор production ОС/RID, ABI моста, авторизованного
-IPC и численных release gates остаётся открытым; текущая сборка не доказывает
-паритет или разгрузку DM.
+Production требует отдельной проверки Linux BYOND ABI, полного игрового цикла
+и измерения end-to-end нагрузки. Сборка C# и cross-compile SO по отдельности
+этого не доказывают.

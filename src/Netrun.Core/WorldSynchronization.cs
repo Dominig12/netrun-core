@@ -4,7 +4,7 @@ namespace Netrun.Core;
 /// Single-owner координатор snapshot → catch-up → публикация фактов.
 /// Неизвестный или повреждённый снимок не обслуживает читателей и не создаёт игровых эффектов.
 /// </summary>
-public sealed class WorldSynchronization : IDisposable
+public sealed class WorldSynchronization : IDisposable, INetworkWorldView
 {
     /// <summary>Неизменяемая идентичность сессии; новый binding требует нового координатора.</summary>
     private readonly Epochs _epochs;
@@ -35,6 +35,10 @@ public sealed class WorldSynchronization : IDisposable
     public int SimulationTimeDs { get; private set; }
     /// <summary>Read-only опубликованное состояние; до финального catch-up барьера пусто.</summary>
     public IReadOnlyDictionary<string, NodeFact> Nodes => _published.Nodes;
+    /// <summary>Секторы публикуются тем же барьером, что и узлы; chunk не выдаёт частичную геометрию.</summary>
+    public IReadOnlyDictionary<string, SectorFact> Sectors => _published.Sectors;
+    /// <summary>Сервисы публикуются атомарно с остальными фактами.</summary>
+    public IReadOnlyDictionary<string, ServiceFact> Services => _published.Services;
 
     /// <summary>Создаёт пустую сессию, ожидающую полный снимок; выполняется без IPC и фоновых задач.</summary>
     public WorldSynchronization(Epochs epochs, CoreLimits? limits = null)
@@ -57,6 +61,22 @@ public sealed class WorldSynchronization : IDisposable
         _applying = true;
         try { return ApplyCore(batch); }
         finally { _applying = false; }
+    }
+
+    /// <summary>
+    /// Закрывает admission по внешней потере целостности runtime и освобождает staging/hash,
+    /// сохраняя последнюю опубликованную модель для диагностики. Новый binding требует нового владельца.
+    /// </summary>
+    /// <param name="code">Доверенный диагностический token из ASCII lowercase, цифр и underscore, до 64 символов.</param>
+    public SynchronizationResult Invalidate(string code)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrEmpty(code) || code.Length > 64 ||
+            code.Any(character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '_')))
+            throw new ArgumentException("Invalid synchronization error code.", nameof(code));
+        if (_applying)
+            throw new InvalidOperationException("Reentrant synchronization is not supported.");
+        return Fail(code);
     }
 
     /// <summary>Освобождает incremental hash и staging; опубликованные immutable факты остаются доступными для диагностики.</summary>
@@ -104,7 +124,7 @@ public sealed class WorldSynchronization : IDisposable
             if (State != MirrorSyncState.AwaitingSnapshot)
                 return Result(ApplyStatus.Rejected, "snapshot_state");
             _staging = new WorldMirror(_epochs, _limits);
-            _checksum = new SnapshotChecksumAccumulator();
+            _checksum = new SnapshotChecksumAccumulator(begin.ChecksumVersion);
             _snapshotId = begin.SnapshotId;
             _journalSequence = begin.JournalSequence;
             State = MirrorSyncState.Snapshotting;
@@ -177,7 +197,10 @@ public sealed class WorldSynchronization : IDisposable
     private SynchronizationResult? ApplyNodes(WorldMirror mirror, IReadOnlyList<WorldChange> changes, int timeDs)
     {
         var result = mirror.Apply(new InputBatch(_epochs, mirror.AppliedSequence + 1, timeDs, changes));
-        return result.Status == ApplyStatus.Applied ? null : Fail(result.Code);
+        if (result.Status == ApplyStatus.Applied)
+            return null;
+        return State == MirrorSyncState.Ready && result.Status == ApplyStatus.Rejected
+            ? Result(ApplyStatus.Rejected, result.Code) : Fail(result.Code);
     }
 
     /// <summary>Диагностика не раскрывает staging как опубликованное состояние; ACK отражает только полные frames.</summary>

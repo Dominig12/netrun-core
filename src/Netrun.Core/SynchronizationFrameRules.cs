@@ -22,7 +22,7 @@ internal static class SynchronizationFrameRules
             writer.Write(batch.Entries.Count);
             foreach (var change in batch.Entries)
             {
-                if (change is NodeUpsert or NodeRemove)
+                if (change is NodeUpsert or NodeRemove or SectorUpsert or SectorRemove or ServiceUpsert or ServiceRemove)
                 {
                     if (!WriteNode(writer, change))
                         return null;
@@ -32,10 +32,11 @@ internal static class SynchronizationFrameRules
                     return null;
                 switch (change)
                 {
-                    case SnapshotBegin begin when ValidId(begin.SnapshotId):
+                    case SnapshotBegin begin when ValidId(begin.SnapshotId) && begin.ChecksumVersion is 1 or 2 or 3:
                         writer.Write((byte)3);
                         writer.Write(begin.SnapshotId);
                         writer.Write(begin.JournalSequence);
+                        writer.Write(begin.ChecksumVersion);
                         break;
                     case SnapshotChunk chunk when ValidId(chunk.SnapshotId) && chunk.ChunkIndex > 0:
                         writer.Write((byte)4);
@@ -43,6 +44,13 @@ internal static class SynchronizationFrameRules
                         writer.Write(chunk.ChunkIndex);
                         if (!WriteNodes(writer, chunk.Changes, maxEntries))
                             return null;
+                        writer.Write(chunk.WireDigest is not null);
+                        if (chunk.WireDigest is not null)
+                        {
+                            if (!ValidDigest(chunk.WireDigest))
+                                return null;
+                            writer.Write(chunk.WireDigest);
+                        }
                         break;
                     case SnapshotCommit commit when ValidId(commit.SnapshotId) && ValidDigest(commit.Sha256):
                         writer.Write((byte)5);
@@ -78,7 +86,7 @@ internal static class SynchronizationFrameRules
     private static bool ValidDigest(string? value) => value is { Length: 64 } &&
         value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
-    /// <summary>В control frame допускается только ограниченный список узлов, без рекурсивных controls.</summary>
+    /// <summary>В control frame допускается ограниченный список фактов, без рекурсивных controls.</summary>
     private static bool WriteNodes(BinaryWriter writer, IReadOnlyList<WorldChange>? changes, int maximum)
     {
         if (changes is null || changes.Count > maximum)
@@ -93,28 +101,18 @@ internal static class SynchronizationFrameRules
     /// <summary>Валидирует полный узловой факт перед hashing; теги различают deletion и upsert.</summary>
     private static bool WriteNode(BinaryWriter writer, WorldChange? change)
     {
+        if (!FactValidation.IsValid(change))
+            return false;
         var mutation = change switch
         {
             NodeUpsert { Node: { } node } => new NodeMutation(node.NodeId, node.Generation, node.Revision, node),
             NodeRemove remove => new NodeMutation(remove.NodeId, remove.Generation, remove.Revision, null),
             _ => null
         };
-        if (!NodeFactRules.IsValidMutation(mutation))
-            return false;
-        writer.Write(mutation!.Fact is null ? (byte)2 : (byte)1);
-        writer.Write(mutation.NodeId);
-        writer.Write(mutation.Generation);
-        writer.Write(mutation.Revision);
-        if (mutation.Fact is { State: var state })
-        {
-            writer.Write(state.Address);
-            writer.Write(state.NodeType);
-            writer.Write(state.Position.X);
-            writer.Write(state.Position.Y);
-            writer.Write(state.Position.Z);
-            writer.Write(state.SectorId);
-            writer.Write(state.Online);
-        }
+        if (mutation is not null)
+            WorldFactEncoding.WriteNode(writer, mutation);
+        else
+            WorldFactEncoding.WriteCatalog(writer, change!);
         return true;
     }
 }

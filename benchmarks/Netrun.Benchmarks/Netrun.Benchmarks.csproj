@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Netrun.Benchmarks</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Netrun.Core/Netrun.Core.csproj" />
+    <ProjectReference Include="../../src/Netrun.Protocol/Netrun.Protocol.csproj" />
+  </ItemGroup>
+</Project>

@@ -97,7 +97,7 @@ public sealed class ProtocolTests
     /// <summary>Новая версия протокола требует явной поддержки, а не оптимистичного разбора прежней схемой.</summary>
     [Theory]
     [InlineData("\"protocol_major\":1", "\"protocol_major\":2")]
-    [InlineData("\"protocol_minor\":0", "\"protocol_minor\":2")]
+    [InlineData("\"protocol_minor\":0", "\"protocol_minor\":4")]
     public void RejectsUnsupportedVersion(string find, string replacement) =>
         Assert.Equal("protocol_version", Assert.Throws<ProtocolException>(() =>
             Decode(Valid.Replace(find, replacement, StringComparison.Ordinal))).Code);

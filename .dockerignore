@@ -1,0 +1,15 @@
+.git
+.github
+**/bin
+**/obj
+**/__pycache__
+TestResults
+tests
+native
+docs
+scripts
+.env
+.env.*
+secrets
+*.user
+*.suo

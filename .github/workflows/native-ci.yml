@@ -10,30 +10,17 @@ permissions:
 jobs:
   windows-cross-build:
     runs-on: windows-latest
-    env:
-      ZIG_VERSION: "0.17.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Download official Zig with pinned SHA-256 verification
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $manifest = Invoke-RestMethod 'https://ziglang.org/download/index.json'
-          $release = $manifest.PSObject.Properties[$env:ZIG_VERSION].Value
-          $package = $release.'x86_64-windows'
-          $expected = 'b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428'
-          if (!$package -or $package.shasum -ne $expected) { throw 'Official Zig manifest does not match the reviewed toolchain hash.' }
-          $archive = Join-Path $env:RUNNER_TEMP 'netrun-zig.zip'
-          Invoke-WebRequest $package.tarball -OutFile $archive
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Zig archive checksum mismatch.' }
-          $directory = Join-Path $env:RUNNER_TEMP 'netrun-zig'
-          Expand-Archive -LiteralPath $archive -DestinationPath $directory
-          $executables = @(Get-ChildItem -LiteralPath $directory -Filter zig.exe -Recurse)
-          if ($executables.Count -ne 1) { throw 'Expected exactly one verified Zig executable.' }
-          ./scripts/build-native.ps1 -Target all -ZigPath $executables[0].FullName
+      - name: Verify portable bootstrap with Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/toolchains/test-toolchains.ps1
+      - name: Bootstrap verified Zig and build native targets
+        shell: powershell
+        run: ./scripts/build-native.ps1 -Target all
       - name: Run Windows x64 ctypes and cross-target export tests
         run: python tests/native/test_bridge.py
       - uses: actions/upload-artifact@v4

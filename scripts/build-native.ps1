@@ -6,14 +6,9 @@
 
 $ErrorActionPreference = 'Stop'
 $netrunRoot = Split-Path -Parent $PSScriptRoot
-if (!$ZigPath) {
-    $netrunZigCache = Join-Path $env:USERPROFILE '.codex/cache/netrun-zig'
-    $ZigPath = Get-ChildItem -LiteralPath $netrunZigCache -Filter zig.exe -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1 -ExpandProperty FullName
-}
-if (!$ZigPath -or !(Test-Path -LiteralPath $ZigPath)) {
-    throw 'Укажите -ZigPath к проверенному portable Zig. Скрипт ничего не устанавливает и не меняет PATH.'
-}
+. (Join-Path $PSScriptRoot 'toolchain-functions.ps1')
+# Явный путь и PATH проверяются по версии; при отсутствии Zig загружается проверенный portable пакет.
+$ZigPath = Ensure-NetrunZig -ZigPath $ZigPath
 $netrunSource = Join-Path $netrunRoot 'native/netrun_bridge.cpp'
 $netrunExports = Join-Path $netrunRoot 'native/netrun_bridge.def'
 $netrunLinuxExports = Join-Path $netrunRoot 'native/netrun_bridge.map'

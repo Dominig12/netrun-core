@@ -103,15 +103,18 @@ g++ -std=c++17 -shared -fPIC -O2 -Wall -Wextra -Werror -fvisibility=hidden \
 python tests/native/test_bridge_linux.py --library native/bin/libnetrun_bridge-x64.so
 ```
 
-Скрипт принимает `-ZigPath`, либо ищет portable `zig.exe` в пользовательском
-`~/.codex/cache/netrun-zig`. Сам скрипт ничего не скачивает, не устанавливает
-production dependencies и не меняет PATH. Для разработки использован Zig 0.17.0:
+Скрипт принимает `-ZigPath`/`NETRUN_ZIG`, проверяет версию в PATH либо автоматически
+получает portable Zig 0.17.0. Cache находится в `%LOCALAPPDATA%/NETRUN/toolchains`,
+другой абсолютный путь задаёт `NETRUN_TOOLCHAIN_CACHE`. Глобальная установка и
+изменение PATH не выполняются. Bootstrap проверяет SHA-256 перед распаковкой,
+использует file lock и публикует готовый cache атомарно. Источник версии:
 
 - официальный manifest: `https://ziglang.org/download/index.json`;
 - архив: `zig-x86_64-windows-0.17.0.zip`, 100268137 bytes;
 - SHA-256: `b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428`;
-- архив получен через Fastly mirror из официального
-  `https://ziglang.org/download/community-mirrors.txt` и проверен этим hash.
+- архив скачивается по HTTPS; при отказе основного сервера используются mirrors
+  из опубликованного Zig списка с тем же закреплённым hash. При недоступности всех
+  источников bootstrap завершается ошибкой, готовые инструменты сохраняются.
 
 SDK и cache находятся вне репозитория. `native/bin/`, Python pycache и готовые
 бинарники исключены из source control.
@@ -135,9 +138,10 @@ SDK и cache находятся вне репозитория. `native/bin/`, Py
 BYOND 516.1688 x86 smoke и production client/effects shutdown при живом worker.
 До module pinning последний сценарий и isolated Windows `FreeLibrary` давали
 `0xC0000005`; после исправления оба завершаются с exit0.
-PE/ELF таблицы содержат ровно пять объявленных exports. Linux проверен
-кросс-сборкой и чтением ELF; добавленный isolated `dlclose` regression должен
-выполняться Linux CI, локальный Linux runtime не запускался.
+PE/ELF таблицы содержат ровно пять объявленных exports. Linux x86 проверен
+кросс-сборкой и чтением ELF. В [Linux x64 CI](https://github.com/Dominig12/netrun-core/actions/runs/41394652977)
+прошли все пять настоящих ABI/socket тестов, включая isolated `dlclose` regression.
+Это не заменяет запуск x86 bridge внутри целевого Linux BYOND.
 
 Сборка bridge и автономные socket/ABI tests не доказывают end-to-end интеграцию
 игры. Перед deployment остаются проверка целевой ОС/архитектуры, способ доставки

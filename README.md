@@ -15,8 +15,19 @@ Host с output replay/ACK и неблокирующий native мост. Точ�
 
 ## Сборка и проверка
 
-Нужен .NET SDK **10.0.403** из `global.json`. Production проекты используют
+Нужен .NET SDK **10.0.403** из `global.json`. В Windows portable bootstrap
+сам получает SDK и Zig с проверкой archive hashes; глобальная установка и
+пользовательские пути Codex не требуются. Production проекты используют
 стандартную библиотеку; NuGet-зависимости есть только у тестов.
+
+```powershell
+$tools = ./scripts/ensure-toolchains.ps1 -Tool all
+& $tools.dotnet restore Netrun.sln --locked-mode
+& $tools.dotnet test Netrun.sln -c Release --no-restore
+./scripts/build-native.ps1 -Target all
+```
+
+При уже установленном совместимом SDK доступны обычные команды:
 
 ```powershell
 dotnet restore Netrun.sln --locked-mode

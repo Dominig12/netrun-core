@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [string] $SourceRoot = (Join-Path $PSScriptRoot '../../MOLOT-BlueMoon-Station'),
-    [string] $BaseRevision
+    [string] $BaseRevision,
+    [string] $SourceRevision
 )
 $ErrorActionPreference = 'Stop'
 $stationRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
@@ -23,6 +24,12 @@ if (!$BaseRevision) { $BaseRevision = (& git -C $stationRoot rev-parse HEAD).Tri
 if ($BaseRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'BaseRevision must be a full commit SHA.' }
 $resolvedBaseRevision = (& git -C $stationRoot rev-parse --verify "$BaseRevision^{commit}").Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the station base commit.' }
+$resolvedSourceRevision = $null
+if ($SourceRevision) {
+    if ($SourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'SourceRevision must be a full commit SHA.' }
+    $resolvedSourceRevision = (& git -C $stationRoot rev-parse --verify "$SourceRevision^{commit}").Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the station source commit.' }
+}
 # Только новые adapter/test файлы; проектный документ пользователя не входит в bundle.
 $newFiles = @(
     'code/modules/unit_tests/netrun_core_live.dm',
@@ -36,6 +43,7 @@ $newFiles = @(
     'modular_bluemoon/code/modules/netrun/integration/external_projection.dm',
     'modular_bluemoon/code/modules/netrun/integration/external_queries.dm',
     'modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm',
+    'tgui/packages/tgui/interfaces/NetrunTerminal/LiveCoreMap.test.tsx',
     'tools/netrun/EXTERNAL_CORE.md',
     'tools/netrun/build-core-container.sh',
     'tools/netrun/compose.yml',
@@ -61,6 +69,7 @@ $hookFiles = @(
     '.github/workflows/ci_suite.yml',
     'Dockerfile',
     'code/__DEFINES/netrun.dm',
+    'code/controllers/master.dm',
     'code/game/machinery/telecomms/machine_interactions.dm',
     'code/game/machinery/telecomms/telecomunications.dm',
     'code/game/world.dm',
@@ -154,10 +163,22 @@ foreach ($relative in $newFiles) {
     # Bundle следует .gitattributes Core: hashes должны сохраниться после Linux/Windows Git checkout.
     $content = [IO.File]::ReadAllText($source, $utf8).Replace("`r`n", "`n").Replace("`r", "`n")
     [IO.File]::WriteAllText($destination, $content, $utf8)
+    if ($resolvedSourceRevision) {
+        # Hook snapshot можно сохранить до последующих upstream merges; adapters
+        # должны побайтово совпадать с выбранным commit, без смешивания ревизий.
+        $expectedBlob = (& git -C $stationRoot rev-parse "${resolvedSourceRevision}:$relative").Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Source revision is missing adapter: $relative" }
+        $actualBlob = (& git -C $stationRoot hash-object --no-filters -- $destination).Trim()
+        if ($LASTEXITCODE -ne 0 -or $actualBlob -ne $expectedBlob) { throw "Adapter differs from SourceRevision: $relative" }
+    }
     $entries += [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 $patchPath = Join-Path $bundleRoot 'station-hooks.patch'
-& git -C $stationRoot diff --binary "--output=$patchPath" $resolvedBaseRevision -- @hookFiles
+$patchArguments = @('-C', $stationRoot, 'diff', '--binary', "--output=$patchPath", $resolvedBaseRevision)
+if ($resolvedSourceRevision) { $patchArguments += $resolvedSourceRevision }
+$patchArguments += '--'
+$patchArguments += $hookFiles
+& git @patchArguments
 if ($LASTEXITCODE -ne 0) { throw 'Cannot export the station integration diff.' }
 $manifest = [ordered]@{
     format = 1
@@ -165,6 +186,7 @@ $manifest = [ordered]@{
     files = $entries
     patch_sha256 = (Get-FileHash -LiteralPath $patchPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+if ($resolvedSourceRevision) { $manifest['source_revision'] = $resolvedSourceRevision }
 $manifestJson = ($manifest | ConvertTo-Json -Depth 5).Replace("`r`n", "`n") + "`n"
 [IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8)
 Write-Output "Exported $($entries.Count) adapter files and the tracked hook diff. Base: $resolvedBaseRevision"

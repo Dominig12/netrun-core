@@ -9,15 +9,16 @@ BYOND 516.1688 x86, Release/net10.0. Ниже приведены локальн�
 | `dotnet test tests/Netrun.Tests/Netrun.Tests.csproj -c Release --no-restore` | 512 passed, 0 failed, 0 skipped; production проекты собраны |
 | Windows native ABI/socket/BYOND suite | 13 passed, включая x86 BYOND и active-worker unload/shutdown regressions |
 | Node build/source/download/Docker/runner suites | 41 passed |
-| NetrunTerminal frontend | 327 passed в 45 suites |
-| Station hermetic DM regression | Все 682 selected Netrun tests passed; compile 0 errors / 0 warnings, runtime errors 0 |
+| NetrunTerminal frontend | 328 passed в 46 suites, включая opt-in тест фактического live UI payload |
+| Station hermetic DM regression | Все 684 selected Netrun tests passed; compile 0 errors / 0 warnings, runtime errors 0 |
 | DreamChecker suite 1.11 / DME include order | 0 diagnostics / успешно |
-| Integration bundle | 29 новых файлов, 81 hooks; состав, SHA-256, LF и применение patch к baseline через отдельный Git index проверены |
+| Integration bundle | 30 новых файлов и 82 hooks; после новых regressions bundle обновляется повторным export |
 | Managed Core build | Host publish + Windows x86 bridge из одного immutable context; source/artifact hashes проверены |
 | Published Host lifecycle probe | Host готов до TCP child; listener и принадлежащие launcher процессы закрылись после выхода child |
 | Tiny-world BYOND → bridge → published Host E2E | PASS: snapshot/catchup/churn, native receive один раз, terminal callback один раз, unknown invocation без ACK |
 | Shell syntax container scripts | Успешно (`bash -n`) |
-| Station-code live smoke | `core-live-d1fa9344f5de`: discovery/native delivery, graph/tree, movement, state и карта импланта прошли; проверка переноса сознания падает при регистрации нового endpoint резидента |
+| BYOND no-client resume probe | Прежний порядок зависает на первом yield; resume до sleep продолжает работу и даёт exit 0 без клиента |
+| Station-code live smoke | PASS, `core-live-e02822995e6e`: discovery/native delivery, graph/tree, movement, state, гостевая карта NTnet-реле, карта импланта, wireless/wired dive и карта резидента; DreamDaemon exit 0 |
 | Docker build/Compose/Linux BYOND runtime | Полная сборка прошла; Linux BYOND x86 → bridge → Host публикует graph и native projection. Пользователь подтвердил загрузку TGUI. Пустая карта сущности и recovery под нагрузкой ещё исследуются |
 
 C# suite покрывает atomic mirror/snapshot/catch-up, checksum golden vectors,
@@ -28,7 +29,7 @@ lifecycle и output replay. Discovery использует source reachability �
 полного пути для каждого кандидата. GraphSync тестирует paged snapshot/delta,
 application ACK, отмену и устойчивость к endpoint churn.
 
-682 station tests проверяют causal command prefixes, bounded coalescing и frames,
+684 station tests проверяют causal command prefixes, bounded coalescing и frames,
 sector resync, recovery/backoff, native identity/permissions/final gate после yield,
 invocation dedup/retirement, query dispatch, graph/source-tree façade, точечную
 инвалидацию UI, прежние gameplay/transport contracts, регистрацию атмосферы,
@@ -58,12 +59,18 @@ Host/DreamDaemon на hermetic map и ограничивает время/лог
 DM topology/APC/tree builders удалены. Это настоящий IPC/runtime тест, но не полный
 production раунд и не измерение нагрузки с игроками.
 
-Это checkpoint для проверки на другой машине, а не завершённая интеграция.
-В Docker зафиксированы startup `source_journal_overflow` и последующий
-`native_result_pressure` с восстановлением binding. После регистрации нового
-endpoint DM временно блокирует route authority; немедленный check возвратной
-связи резидента приводит к отказу погружения. Также найден отсутствующий runtime
-`lobby_html.txt` со стилями лобби; он добавлен в deploy, новый образ ещё требуется.
+Live ответ гостя содержит 14 узлов и 13 рёбер. Он сохранён без подмены projection
+и передан через настоящий TGUI backend reducer/map stream/controller; relay
+присутствует в видимой модели сцены, лишний resync не запрашивается. GPU в jsdom
+заменён test surface, поэтому это не визуальная проверка DreamSeeker/WebGL.
+
+Первые Docker-запуски выявили startup `source_journal_overflow` и последующий
+`native_result_pressure` с восстановлением binding. Result/control capacity
+отделена от request admission; новая полная runtime-проверка ещё выполняется.
+Обычный новый endpoint теперь отзывает собственный proof до ACK, сохраняя
+подтверждённые маршруты других узлов; raw APC/relay изменения продолжают закрывать
+global infrastructure gate. Это устранило immediate emergency return при dive.
+Отсутствующий runtime `lobby_html.txt` со стилями лобби добавлен в deploy.
 
 Synthetic C# benchmark для 1k/5k/10k узлов сохранён в [baseline.md](baseline.md)
 и [raw JSON](baseline-results.json). Его timings не доказывают end-to-end speedup

@@ -17,6 +17,12 @@ Bundle обновляется из checkout станции командой:
 коммитов станции. Для намеренной смены baseline передайте `-BaseRevision` с полным
 40-символьным commit SHA. Без существующего manifest первый export использует HEAD.
 
+`-SourceRevision <полный SHA>` фиксирует hook diff по выбранному commit и записывает
+`source_revision` в manifest. Новые adapter files в checkout обязаны совпадать с
+его Git blobs после UTF-8/LF нормализации; смешивание ревизий отклоняется.
+Без параметра экспортируется working tree. Binary additions передаются через
+`station-hooks.patch` с `git diff --binary`; `files/` остаётся текстовым UTF-8/LF.
+
 Перед применением к другому checkout проверьте совместимость базовой ревизии и
 выполните `git apply --check /absolute/path/station-hooks.patch` из его корня.
 Просмотрите patch, затем примените его и скопируйте новые файлы из `files/`,

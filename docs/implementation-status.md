@@ -33,8 +33,8 @@ movement recovery, отдельный idempotent контракт `state` и н�
 остаются независимыми. Машинные SEND/RECEIVE journals и bounded ROOT payload
 capture сохраняются без локального расчёта маршрута или задержки.
 
-В [integration/dm](../integration/dm/README.md) сохранены 29 новых adapter/test/tool
-файлов и патч 81 существующего файла станции, включая удалённые builders,
+В [integration/dm](../integration/dm/README.md) сохранены 30 новых adapter/test/tool
+файлов и патч 82 существующих файлов станции, включая удалённые builders,
 миграцию тестов, build/run и shutdown. Manifest содержит
 базовый commit станции и SHA-256; hook patch проверен через `git apply --cached
 --check`. Windows default Build/Run собирает согласованный Core пакет и управляет

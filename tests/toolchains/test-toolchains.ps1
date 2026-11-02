@@ -37,6 +37,11 @@ $script:testProbes = 0
 try {
     [IO.Directory]::CreateDirectory($testRoot) | Out-Null
     $env:NETRUN_TOOLCHAIN_CACHE = Join-Path $testRoot 'cache'
+    # Эталонные SHA vectors проверяют обе ветки .NET hashing без Get-FileHash и внешних модулей.
+    $hashVector = Join-Path $testRoot 'hash-vector.txt'
+    [IO.File]::WriteAllBytes($hashVector, [Text.Encoding]::ASCII.GetBytes('abc'))
+    Assert-Test ((Get-NetrunFileHash -Path $hashVector -Algorithm SHA256) -eq 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad') 'SHA256 matches the standard abc vector'
+    Assert-Test ((Get-NetrunFileHash -Path $hashVector -Algorithm SHA512) -eq 'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f') 'SHA512 matches the standard abc vector'
     Assert-Test (Test-NetrunToolVersion -Version '0.17.0' -Tool zig) 'pinned Zig is accepted'
     Assert-Test (!(Test-NetrunToolVersion -Version '0.18.0' -Tool zig)) 'another Zig release is rejected'
     Assert-Test (Test-NetrunToolVersion -Version '10.0.403' -Tool dotnet) 'pinned SDK is accepted'
@@ -75,7 +80,7 @@ try {
     Receive-NetrunToolchainArchive -Url 'https://official.invalid/test.zip' -Destination $retryArchive -ZigMirrors
     Assert-Test ($script:testAttempts -eq 2) 'transient download failure is retried'
     Assert-Test ($script:testSources[1] -eq 'https://mirror.invalid/first.zip') 'official Zig failure switches to a mirror'
-    Assert-Test ((Get-FileHash -LiteralPath $retryArchive).Hash -eq (Get-FileHash -LiteralPath $script:testArchive).Hash) 'retry replaces the partial archive'
+    Assert-Test ((Get-NetrunFileHash -Path $retryArchive) -eq (Get-NetrunFileHash -Path $script:testArchive)) 'retry replaces the partial archive'
     $rejected = $false
     try { Receive-NetrunToolchainArchive -Url 'https://official.invalid/test.zip' -Destination $retryArchive }
     catch { $rejected = $_.Exception.Message -like '*already exists*' }
@@ -109,7 +114,7 @@ try {
     Assert-Test ($script:testProbes -eq 0) 'unverified executable is never run'
     Assert-Test (@(Get-ChildItem -LiteralPath $env:NETRUN_TOOLCHAIN_CACHE -Directory).Count -eq 0) 'failed installation publishes nothing and cleans staging'
 
-    $script:NetrunToolchainPackages.zig.Hash = (Get-FileHash -LiteralPath $script:testArchive -Algorithm SHA256).Hash
+    $script:NetrunToolchainPackages.zig.Hash = Get-NetrunFileHash -Path $script:testArchive -Algorithm SHA256
     $resolved = Install-NetrunToolchain -Tool zig
     Assert-Test (Test-Path -LiteralPath $resolved -PathType Leaf) 'verified installation publishes its executable'
     Assert-Test (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $resolved) '.netrun-toolchain.json')) 'completion marker is published together with package'

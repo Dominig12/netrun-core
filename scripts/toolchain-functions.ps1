@@ -28,6 +28,21 @@ function Write-NetrunToolchainProgress {
     Write-Host "[netrun toolchains] $Message"
 }
 
+# Считаем hash потоком через .NET: Get-FileHash может отсутствовать при унаследованном от PowerShell 7 PSModulePath.
+function Get-NetrunFileHash {
+    param([string]$Path, [ValidateSet('SHA256', 'SHA512')][string]$Algorithm = 'SHA256')
+    $hasher = if ($Algorithm -eq 'SHA256') { [Security.Cryptography.SHA256]::Create() } else { [Security.Cryptography.SHA512]::Create() }
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+        if ($stream) { $stream.Dispose() }
+        $hasher.Dispose()
+    }
+}
+
 # Каталог кэша не зависит от расположения checkout или конкретной среды разработки.
 function Get-NetrunToolchainCache {
     $cache = $env:NETRUN_TOOLCHAIN_CACHE
@@ -274,7 +289,7 @@ function Test-NetrunCachedToolchain {
     try {
         $state = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
         if ($state.version -ne $Package.Version -or $state.archiveHash -ne $Package.Hash) { return $false }
-        if ((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash -ne $state.executableHash) { return $false }
+        if ((Get-NetrunFileHash -Path $executable -Algorithm SHA256) -ne $state.executableHash) { return $false }
         return Test-NetrunToolVersion -Version (Get-NetrunToolVersion -Path $executable -Tool $Tool) -Tool $Tool
     }
     catch { return $false }
@@ -304,7 +319,7 @@ function Install-NetrunToolchain {
         $archive = Join-Path $stage 'download.zip'
         Receive-NetrunToolchainArchive -Url $package.Url -Destination $archive -ZigMirrors:($Tool -eq 'zig')
         Write-NetrunToolchainProgress "Verifying $Tool archive ($($package.Algorithm))"
-        if ((Get-FileHash -LiteralPath $archive -Algorithm $package.Algorithm).Hash -ne $package.Hash) {
+        if ((Get-NetrunFileHash -Path $archive -Algorithm $package.Algorithm) -ne $package.Hash) {
             throw "$Tool archive checksum mismatch. The downloaded package will not be executed."
         }
         $extracted = Join-Path $stage 'package'
@@ -316,7 +331,7 @@ function Install-NetrunToolchain {
         $state = [ordered]@{
             version = $package.Version
             archiveHash = $package.Hash
-            executableHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
+            executableHash = Get-NetrunFileHash -Path $executable -Algorithm SHA256
         }
         [IO.File]::WriteAllText((Join-Path $payload '.netrun-toolchain.json'), ($state | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
         # Предыдущая установка сохраняется, пока проверенная замена не опубликована успешно.

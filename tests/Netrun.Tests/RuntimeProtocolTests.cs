@@ -26,6 +26,43 @@ public sealed class RuntimeProtocolTests
     /// <summary>Модель неизвестной команды проверяет закрытость wire allowlist.</summary>
     private sealed record UnsupportedCommand : RuntimeCommand;
 
+    /// <summary>Группа сохраняет точные 64-bit sequences, ограничивает burst и не ослабляет одиночную схему.</summary>
+    [Fact]
+    public void InputBatchKeepsIndependentSequencesAndStrictCommandBoundary()
+    {
+        var inputs = Enumerable.Range(0, 16).Select(index => new RuntimeInput(Epochs,
+            16777217UL + (ulong)index, 15, new ConfigureBackbone(index % 2 == 0))).ToArray();
+        var encoded = RuntimeJson.EncodeBatch(inputs, 7);
+        var decoded = Assert.IsType<RuntimeInputBatch>(RuntimeJson.Decode(encoded));
+        Assert.Equal(7UL, decoded.AckOutputSequence);
+        Assert.Equal(inputs, decoded.Inputs);
+        var body = Encoding.UTF8.GetString(encoded);
+        foreach (var invalid in new[]
+        {
+            body.Replace("\"sequence\":\"16777232\"", "\"sequence\":\"1\"", StringComparison.Ordinal),
+            body.Replace("\"kind\":\"input_batch\",", "", StringComparison.Ordinal),
+            body.Replace("\"kind\":\"backbone_configure\",\"enabled\":true", "\"kind\":\"catchup_complete\"", StringComparison.Ordinal),
+            body.Replace("\"kind\":\"backbone_configure\",", "", StringComparison.Ordinal),
+            body[..^1] + ",\"extra\":true}"
+        }) Assert.Throws<ProtocolException>(() => RuntimeJson.Decode(Encoding.UTF8.GetBytes(invalid)));
+        Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch(inputs[..1]));
+        Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch([.. inputs, inputs[^1]]));
+        foreach (var second in new[]
+        {
+            inputs[1] with { Sequence = inputs[0].Sequence },
+            inputs[1] with { Epochs = new("other", "engine", "binding") },
+            inputs[1] with { SimulationTimeDs = 16 },
+            inputs[1] with { Command = new ApplyWorld([]) },
+            inputs[1] with { Command = new QueryRoute(new("a", 1), new("b", 1), RouteKind.Machine) }
+        }) Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch([inputs[0], second]));
+        Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch([
+            inputs[0] with { Sequence = ulong.MaxValue }, inputs[1] with { Sequence = 0 }]));
+        var finalCounters = new[] { inputs[0] with { Sequence = ulong.MaxValue - 1 }, inputs[1] with { Sequence = ulong.MaxValue } };
+        Assert.Equal(finalCounters, Assert.IsType<RuntimeInputBatch>(RuntimeJson.Decode(RuntimeJson.EncodeBatch(finalCounters))).Inputs);
+        var tooMany = body.Replace("\"entries\":[", "\"entries\":[{\"kind\":\"backbone_configure\",\"enabled\":true},", StringComparison.Ordinal);
+        Assert.Throws<ProtocolException>(() => RuntimeJson.Decode(Encoding.UTF8.GetBytes(tooMany)));
+    }
+
     /// <summary>Каждая логическая команда имеет независимый typed round-trip, включая оба route режима.</summary>
     public static IEnumerable<object[]> Commands()
     {

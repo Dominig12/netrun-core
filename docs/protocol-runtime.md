@@ -4,8 +4,8 @@ Transport framing — unsigned 4-byte big-endian длина и UTF-8 JSON body �
 Соединение сначала проходит authenticated hello и полный snapshot/catch-up.
 Примеры ниже описывают logical frames уже выбранного binding; токен в них отсутствует.
 
-Каждый logical frame содержит ровно одну команду либо batch world facts. Команду
-нельзя смешивать с world facts или другой командой. Все поля в примерах обязательны,
+Каждый logical input содержит ровно одну команду либо batch world facts. Команду
+нельзя смешивать с world facts. Все поля в примерах обязательны,
 включая nullable поля; неизвестные и повторные поля отвергаются.
 
 `sequence` — положительный canonical decimal UInt64 string. `ack_output_sequence`
@@ -22,11 +22,36 @@ epoch, после чего старая история освобождаетс�
 подключения до перезапуска процесса.
 
 Один ответ Host содержит не более восьми transport/projection events и, для
-logical input, одного `runtime_result`. `poll.max_events` задаёт меньший предел,
+logical input, одного `runtime_result` на каждую команду. `poll.max_events` задаёт меньший предел,
 включая ноль для ACK-only запроса. Остальные события сохраняются для следующих
 poll, а output replay до ACK возвращает прежние bytes без повторного исполнения.
 Одна projection page по-прежнему содержит не более 32 rows. Это ограничивает
 объём синхронной обработки DM одного ответа без изменения версии протокола.
+
+## Согласуемая группировка команд
+
+`hello_ack.max_input_commands = 16` разрешает `kind: "input_batch"` в обычном
+envelope 1.3. Без этого поля DM отправляет одиночные команды. В `entries` группы
+допускаются 2..16 команд, кроме world facts и диагностического `route_query` с
+потенциально большим ответом. Весь JSON проверяется до применения первой команды.
+`sequence` обозначает последнюю команду: для N entries независимые logical
+sequences равны `sequence - N + 1` .. `sequence`. Все получают один
+`simulation_time_ds`, собственный dedup fingerprint и `runtime_result.input_sequence`.
+Одиночная legacy-схема остаётся строгой и не принимает несколько команд.
+
+Это транспортная оптимизация, а не атомарная domain-транзакция. Semantic
+`would_block` потребляет sequence отдельной команды, остальные продолжают admission.
+DM сохраняет request identity, payload и FIFO при повторе. Protocol/runtime rejection
+останавливает неприменённый хвост и требует обычной обработки ошибки binding.
+Host вызывает один bounded Pump на группу и сохраняет максимум 8 событий за ответ.
+Операции с `ordered: true` по-прежнему исполняются по одной на destination service;
+следующий native effect ждёт результата предыдущего.
+
+DM собирает только готовый FIFO prefix с общим пределом 131072 JSON-символов;
+каждый command сохраняет собственный captured fact barrier. Карта/discovery и
+machine control/request очереди чередуются, поэтому поток invocation results не
+может бесконечно откладывать подтверждение GraphSync. В VV доступны negotiated
+`max_input_commands`, `sent_input_batches` и `sent_batched_commands`.
 
 ## Discovery
 

@@ -8,7 +8,7 @@ namespace Netrun.Host;
 /// <summary>Composition доменной сессии и подтверждаемого output journal после аутентификации.</summary>
 public sealed class RuntimeHostSession : IHostSession
 {
-    /// <summary>Bounded native apply burst: не более 256 projection rows и одного diagnostic result за ответ.</summary>
+    /// <summary>Bounded native apply burst: не более 256 projection rows за ответ, независимо от числа команд.</summary>
     private const int MaximumEventsPerReply = 8;
     /// <summary>Идентичность одного соединения; poll не может изменить binding или engine.</summary>
     private readonly Epochs _epochs;
@@ -40,14 +40,21 @@ public sealed class RuntimeHostSession : IHostSession
         if (!_outputs.CanReserve)
             throw new ProtocolException("output_pressure");
 
-        byte[]? result = null;
-        RuntimeResult? outcome = null;
-        ulong inputSequence = 0;
+        var outcomes = new List<(RuntimeResult Result, ulong Sequence)>();
         var maximumEvents = MaximumEventsPerReply;
         if (message is RuntimePacket packet)
         {
-            outcome = _runtime.Apply(packet.Input);
-            inputSequence = packet.Input.Sequence;
+            outcomes.Add((_runtime.Apply(packet.Input), packet.Input.Sequence));
+        }
+        else if (message is RuntimeInputBatch batch)
+        {
+            foreach (var input in batch.Inputs)
+            {
+                var outcome = _runtime.Apply(input);
+                outcomes.Add((outcome, input.Sequence));
+                // Не применять хвост после нарушенного causal prefix. DM получит отказ и выполнит resync.
+                if (outcome.Apply.Status is not (ApplyStatus.Applied or ApplyStatus.Duplicate)) break;
+            }
         }
         else if (message is RuntimePoll poll)
         {
@@ -55,18 +62,19 @@ public sealed class RuntimeHostSession : IHostSession
         }
         _runtime.Pump();
         // Deferred build выполняется в Pump; native peer должен увидеть его readiness в том же logical reply.
-        if (outcome is not null)
+        var results = new List<byte[]>(outcomes.Count);
+        foreach (var (outcome, inputSequence) in outcomes)
         {
             var graph = _runtime.Graph;
-            result = RuntimeOutputJson.Result(outcome with
+            results.Add(RuntimeOutputJson.Result(outcome with
             {
                 GraphVersion = graph?.Version ?? 0,
                 GraphInputSequence = graph?.InputSequence ?? 0,
                 TopologyPending = _runtime.TopologyPending,
                 ErrorCode = _runtime.TopologyError ?? outcome.ErrorCode
-            }, inputSequence, _runtime);
+            }, inputSequence, _runtime));
         }
-        var response = Pack(result, maximumEvents);
+        var response = Pack(results, maximumEvents);
         _outputs.Append(response);
         return ValueTask.FromResult(response);
     }
@@ -78,11 +86,11 @@ public sealed class RuntimeHostSession : IHostSession
     public void Dispose() => _runtime.Dispose();
 
     /// <summary>Формирует ограниченный кадр; event переходит в журнал до передачи сетевому writer.</summary>
-    private byte[] Pack(byte[]? result, int maximumEvents)
+    private byte[] Pack(IReadOnlyList<byte[]> results, int maximumEvents)
     {
         var entries = new List<byte[]>();
         var total = 1024;
-        if (result is not null)
+        foreach (var result in results)
         {
             entries.Add(result);
             total += result.Length + 1;

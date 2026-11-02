@@ -20,6 +20,12 @@ public abstract record RuntimeMessage(Epochs Epochs, ulong AckOutputSequence);
 /// <param name="AckOutputSequence">Cumulative ACK обработки выходов DM.</param>
 public sealed record RuntimePacket(RuntimeInput Input, ulong AckOutputSequence) : RuntimeMessage(Input.Epochs, AckOutputSequence);
 
+/// <summary>Ограниченная транспортная группа независимо sequenced команд одного игрового времени.</summary>
+/// <param name="Inputs">Последовательные команды; world facts и диагностические route replies передаются отдельно.</param>
+/// <param name="AckOutputSequence">Cumulative ACK обработки выходов DM.</param>
+public sealed record RuntimeInputBatch(IReadOnlyList<RuntimeInput> Inputs, ulong AckOutputSequence)
+    : RuntimeMessage(Inputs[0].Epochs, AckOutputSequence);
+
 /// <summary>Чтение уже готовых выходов; не является входом игрового clock или фактов.</summary>
 /// <param name="Epochs">Идентичность выбранного binding.</param>
 /// <param name="AckOutputSequence">Cumulative ACK обработки выходов DM.</param>
@@ -29,6 +35,8 @@ public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int Max
 /// <summary>Строгая runtime-схема v1.3; команды не смешиваются с world facts внутри одного атомарного frame.</summary>
 public static class RuntimeJson
 {
+    /// <summary>Согласуемый hello_ack предел команд; не увеличивает бюджет Pump или native events.</summary>
+    public const int MaxInputCommands = 16;
     /// <summary>
     /// Структурный JSON parser ограничен числом пар скобок внутри заранее ограниченного 1-MiB frame.
     /// Payload глубже 32 остаётся valid JSON и получает message-level отказ вместо закрытия binding.
@@ -47,14 +55,21 @@ public static class RuntimeJson
             _ = StrictUtf8.GetCharCount(body);
             using var document = JsonDocument.Parse(body.ToArray(), new JsonDocumentOptions { MaxDepth = MaxDepth });
             var root = document.RootElement;
+            var grouped = false;
             if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("kind", out var kind))
             {
-                if (Text(kind, 32) != "poll") throw Schema();
-                Fields(root, "kind", "world_epoch", "engine_epoch", "binding_epoch", "ack_output_sequence", "max_events");
-                return new RuntimePoll(ReadEpochs(root), Counter(root.GetProperty("ack_output_sequence"), true),
-                    Integer(root.GetProperty("max_events"), 0, 128));
+                grouped = Text(kind, 32) == "input_batch";
+                if (!grouped)
+                {
+                    if (Text(kind, 32) != "poll") throw Schema();
+                    Fields(root, "kind", "world_epoch", "engine_epoch", "binding_epoch", "ack_output_sequence", "max_events");
+                    return new RuntimePoll(ReadEpochs(root), Counter(root.GetProperty("ack_output_sequence"), true),
+                        Integer(root.GetProperty("max_events"), 0, 128));
+                }
             }
-            Fields(root, "protocol_major", "protocol_minor", "world_epoch", "engine_epoch", "binding_epoch", "sequence",
+            if (grouped) Fields(root, "kind", "protocol_major", "protocol_minor", "world_epoch", "engine_epoch", "binding_epoch", "sequence",
+                "ack_output_sequence", "simulation_time_ds", "entries");
+            else Fields(root, "protocol_major", "protocol_minor", "world_epoch", "engine_epoch", "binding_epoch", "sequence",
                 "ack_output_sequence", "simulation_time_ds", "entries");
             if (Integer(root.GetProperty("protocol_major"), 0, int.MaxValue) != 1 ||
                 Integer(root.GetProperty("protocol_minor"), 0, int.MaxValue) != 3) throw new ProtocolException("protocol_version");
@@ -64,6 +79,24 @@ public static class RuntimeJson
             var time = Integer(root.GetProperty("simulation_time_ds"), 0, int.MaxValue);
             var entries = root.GetProperty("entries");
             if (entries.ValueKind != JsonValueKind.Array || entries.GetArrayLength() > BatchJson.MaxEntries) throw Schema();
+            if (grouped)
+            {
+                var count = entries.GetArrayLength();
+                if (count is < 2 or > MaxInputCommands || sequence < (ulong)count) throw Schema();
+                var inputs = new RuntimeInput[count];
+                var index = 0;
+                // Весь frame проверяется до первого Apply. sequence обозначает конец непрерывной группы.
+                foreach (var entry in entries.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object || !entry.TryGetProperty("kind", out var entryKind) ||
+                        !IsCommand(Text(entryKind, 128))) throw Schema();
+                    var item = ReadCommand(entry);
+                    if (item is QueryRoute) throw Schema();
+                    inputs[index] = new(epochs, sequence - (ulong)count + 1 + (ulong)index, time, item);
+                    index++;
+                }
+                return new RuntimeInputBatch(inputs, ack);
+            }
             RuntimeCommand? command = null;
             foreach (var entry in entries.EnumerateArray())
             {
@@ -97,6 +130,41 @@ public static class RuntimeJson
         catch (JsonException) { throw new ProtocolException("invalid_json"); }
         catch (InvalidOperationException) { throw Schema(); }
         catch (ArgumentException) { throw Schema(); }
+    }
+
+    /// <summary>Кодирует только последовательные команды; каждая сохраняет собственные dedup и result correlation.</summary>
+    public static byte[] EncodeBatch(IReadOnlyList<RuntimeInput> inputs, ulong ackOutputSequence = 0)
+    {
+        if (inputs is null || inputs.Count is < 2 or > MaxInputCommands) throw Schema();
+        var first = inputs[0];
+        if (first is null || first.Sequence == 0 || first.SimulationTimeDs < 0 ||
+            first.Sequence > ulong.MaxValue - (ulong)(inputs.Count - 1)) throw Schema();
+        ValidateEpochs(first.Epochs);
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "input_batch");
+            writer.WriteNumber("protocol_major", 1);
+            writer.WriteNumber("protocol_minor", 3);
+            WriteEpochs(writer, first.Epochs);
+            writer.WriteString("sequence", Decimal(first.Sequence + (ulong)(inputs.Count - 1)));
+            writer.WriteString("ack_output_sequence", Decimal(ackOutputSequence));
+            writer.WriteNumber("simulation_time_ds", first.SimulationTimeDs);
+            writer.WriteStartArray("entries");
+            for (var i = 0; i < inputs.Count; i++)
+            {
+                var input = inputs[i];
+                if (input is null || input.Sequence != first.Sequence + (ulong)i || input.Epochs != first.Epochs ||
+                    input.SimulationTimeDs != first.SimulationTimeDs || input.Command is null or ApplyWorld or QueryRoute) throw Schema();
+                ValidateCommand(input.Command);
+                WriteCommand(writer, input.Command);
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        if (buffer.Length > FramedStream.MaxFrameBytes) throw new ProtocolException("frame_size");
+        return buffer.ToArray();
     }
 
     /// <summary>Кодирует одну typed runtime-команду; world facts делегируются точному BatchJson minimumMinor 3.</summary>

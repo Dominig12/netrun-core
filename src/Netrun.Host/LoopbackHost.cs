@@ -119,6 +119,7 @@ public sealed class LoopbackHost : IAsyncDisposable
                 binding_epoch = epochs.Binding,
                 max_frame_bytes = FramedStream.MaxFrameBytes,
                 max_entries = BatchJson.MaxEntries,
+                max_input_commands = RuntimeJson.MaxInputCommands,
                 snapshot_checksum_version = 3
             }), handshake.Token);
             while (!cancellationToken.IsCancellationRequested)

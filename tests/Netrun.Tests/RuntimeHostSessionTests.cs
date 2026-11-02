@@ -55,7 +55,7 @@ public sealed class RuntimeHostSessionTests
         }
 
         /// <summary>Завершает полный bootstrap; checksum v3 вычисляется из decoder-derived raw digest фактического chunk.</summary>
-        internal async Task<byte[]> Synchronize(int checksumVersion = 2, int targetX = 2, int extraNodes = 0)
+        internal async Task<byte[]> Synchronize(int checksumVersion = 2, int targetX = 2, int extraNodes = 0, bool ordered = true)
         {
             WorldChange[] facts =
             [
@@ -63,9 +63,9 @@ public sealed class RuntimeHostSessionTests
                 new NodeUpsert(new("source-node", 1, 1, new("A", "apc", new(1, 1, 1), "s", true, new("home", "home")))),
                 new NodeUpsert(new("target-node", 1, 1, new("B", "server", new(targetX, 1, 1), "s", true, new("home", "home")))),
                 new ServiceUpsert(new("source", 1, 1, new("source-node", 1), "test.source", "A", true,
-                    new([new("read", OperationSafety.ReadOnly)], 64))),
+                    new([new("read", OperationSafety.ReadOnly, Ordered: ordered)], 64))),
                 new ServiceUpsert(new("target", 1, 1, new("target-node", 1), "test.target", "B", true,
-                    new([new("read", OperationSafety.ReadOnly)], 64))),
+                    new([new("read", OperationSafety.ReadOnly, Ordered: ordered)], 64))),
                 .. Enumerable.Range(0, extraNodes).Select(index => new NodeUpsert(new NodeFact(
                     "extra-" + index.ToString("D3", CultureInfo.InvariantCulture), 1, 1,
                     new("C-" + index.ToString("D3", CultureInfo.InvariantCulture), "server", new(index + 3, 1, 1),
@@ -109,6 +109,78 @@ public sealed class RuntimeHostSessionTests
 
     /// <summary>Типизированное обращение к реальному объявленному тестовому сервису.</summary>
     private static NetworkRequest Request() => new(new("peer", 1), new("source", 1), new("target", 1), "read", Payload());
+
+    /// <summary>Один wire frame применяет 16 команд, но native handoff остаётся bounded и once-only при replay.</summary>
+    [Fact]
+    public async Task InputBatchCorrelatesEachAdmissionWithoutExpandingNativeBurst()
+    {
+        using var session = Session();
+        var peer = DirectPeer(session);
+        await peer.Synchronize(ordered: false);
+        var inputs = Enumerable.Range(1, 16).Select(index => new RuntimeInput(Epochs,
+            peer.Sequence + (ulong)index, 0, new SubmitRequest(Request() with { Key = new("batch", (ulong)index) }))).ToArray();
+        var body = RuntimeJson.EncodeBatch(inputs, peer.Ack);
+        var invoked = new Dictionary<string, string>();
+        ulong ack = peer.Ack;
+        void Observe(byte[] response, bool admissions)
+        {
+            using var document = JsonDocument.Parse(response);
+            var root = document.RootElement;
+            ack = Counter(root, "output_sequence");
+            Assert.Equal(inputs[^1].Sequence, Counter(root, "applied_sequence"));
+            var entries = root.GetProperty("results").EnumerateArray().ToArray();
+            Assert.InRange(entries.Count(entry => entry.GetProperty("kind").GetString() != "runtime_result"), 0, 8);
+            var results = entries.Where(entry => entry.GetProperty("kind").GetString() == "runtime_result").ToArray();
+            if (admissions)
+            {
+                Assert.Equal(16, results.Length);
+                for (var i = 0; i < results.Length; i++)
+                {
+                    Assert.Equal(inputs[i].Sequence, Counter(results[i], "input_sequence"));
+                    Assert.Equal("accepted", results[i].GetProperty("admission").GetProperty("status").GetString());
+                }
+            }
+            foreach (var entry in entries.Where(entry => entry.GetProperty("kind").GetString() == "service_invocation"))
+                Assert.True(invoked.TryAdd(entry.GetProperty("request_id").GetString()!, entry.GetProperty("invocation_id").GetString()!));
+        }
+        Observe(await session.ProcessAsync(body, CancellationToken.None), true);
+        for (var i = 0; i < 10 && invoked.Count < 16; i++)
+            Observe(await session.ProcessAsync(RuntimeJson.EncodePoll(Epochs, ack), CancellationToken.None), false);
+        Assert.Equal(16, invoked.Count);
+        using var replay = JsonDocument.Parse(await session.ProcessAsync(RuntimeJson.EncodeBatch(inputs, ack), CancellationToken.None));
+        var replayEntries = replay.RootElement.GetProperty("results").EnumerateArray().ToArray();
+        Assert.Equal(16, replayEntries.Length);
+        Assert.All(replayEntries, entry => Assert.Equal("duplicate", entry.GetProperty("status").GetString()));
+        var finishes = invoked.Values.Select((id, index) => new RuntimeInput(Epochs,
+            inputs[^1].Sequence + 1 + (ulong)index, 0, new FinishInvocation(new(Epochs.Binding, id, true)))).ToArray();
+        using var completed = JsonDocument.Parse(await session.ProcessAsync(RuntimeJson.EncodeBatch(finishes,
+            Counter(replay.RootElement, "output_sequence")), CancellationToken.None));
+        Assert.Equal(finishes[^1].Sequence, Counter(completed.RootElement, "applied_sequence"));
+        Assert.Equal(16, completed.RootElement.GetProperty("results").EnumerateArray()
+            .Count(entry => entry.GetProperty("kind").GetString() == "runtime_result"));
+    }
+
+    /// <summary>Semantic pressure потребляет каждый sequence; protocol rejection останавливает весь неприменённый хвост.</summary>
+    [Fact]
+    public async Task InputBatchPressureDoesNotCreateSequenceGapsAndRejectsBeforeBootstrap()
+    {
+        using var session = Session(new RuntimeOptions(Transport: new TransportOptions(MaxActive: 1)));
+        var peer = DirectPeer(session);
+        await peer.Synchronize();
+        var inputs = Enumerable.Range(1, 3).Select(index => new RuntimeInput(Epochs,
+            peer.Sequence + (ulong)index, 0, new SubmitRequest(Request() with { Key = new("pressure", (ulong)index) }))).ToArray();
+        using var response = JsonDocument.Parse(await session.ProcessAsync(RuntimeJson.EncodeBatch(inputs, peer.Ack), CancellationToken.None));
+        var results = response.RootElement.GetProperty("results").EnumerateArray()
+            .Where(entry => entry.GetProperty("kind").GetString() == "runtime_result").ToArray();
+        Assert.Equal(new[] { "accepted", "would_block", "would_block" },
+            results.Select(entry => entry.GetProperty("admission").GetProperty("status").GetString()));
+        Assert.Equal(inputs[^1].Sequence, Counter(response.RootElement, "applied_sequence"));
+        using var unready = Session();
+        using var rejected = JsonDocument.Parse(await unready.ProcessAsync(RuntimeJson.EncodeBatch([
+            new(Epochs, 1, 0, new ConfigureBackbone(false)), new(Epochs, 2, 0, new ConfigureBackbone(true))]), CancellationToken.None));
+        Assert.Equal(0UL, Counter(rejected.RootElement, "applied_sequence"));
+        Assert.Equal("not_ready", Entry(rejected, "runtime_result").GetProperty("code").GetString());
+    }
 
     /// <summary>Full snapshot обоих форматов публикует пригодный граф и выполняет отдельный native handoff/result lifecycle.</summary>
     [Theory]

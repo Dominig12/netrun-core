@@ -14,9 +14,12 @@ public sealed class LoopbackHostOptions
     public TimeSpan HandshakeTimeout { get; }
     /// <summary>Физический срок отсутствия входного кадра; heartbeat может продлевать его при паузе мира.</summary>
     public TimeSpan IdleTimeout { get; }
+    /// <summary>Предел retired binding history одной engine epoch; заполнение переводит Host в новую epoch.</summary>
+    public int MaxRetiredBindings { get; }
 
     /// <summary>Проверяет конфигурацию до открытия listener, не сохраняет строку секрета для логов.</summary>
-    public LoopbackHostOptions(int port, string sessionToken, TimeSpan? handshakeTimeout = null, TimeSpan? idleTimeout = null)
+    public LoopbackHostOptions(int port, string sessionToken, TimeSpan? handshakeTimeout = null, TimeSpan? idleTimeout = null,
+        int maxRetiredBindings = 4096)
     {
         if (port is < 0 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -27,6 +30,9 @@ public sealed class LoopbackHostOptions
         IdleTimeout = idleTimeout ?? TimeSpan.FromSeconds(30);
         if (HandshakeTimeout <= TimeSpan.Zero || IdleTimeout <= TimeSpan.Zero)
             throw new ArgumentException("Invalid host timeouts.");
+        if (maxRetiredBindings is < 1 or > 4096)
+            throw new ArgumentOutOfRangeException(nameof(maxRetiredBindings));
+        MaxRetiredBindings = maxRetiredBindings;
         _sessionToken = Encoding.UTF8.GetBytes(sessionToken);
     }
 

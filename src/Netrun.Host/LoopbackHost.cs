@@ -16,12 +16,10 @@ public sealed class LoopbackHost : IAsyncDisposable
     private readonly IHostSessionFactory _factory;
     /// <summary>Listener всегда связан с IPv4 loopback; backlog ограничен одним ожидающим соединением.</summary>
     private readonly TcpListener _listener;
-    /// <summary>Инкарнация процесса Host; одинаковая во всех hello_ack этого запуска.</summary>
-    private readonly string _engineEpoch = Guid.NewGuid().ToString("N");
-    /// <summary>Процесс не принимает старый binding повторно после disconnect.</summary>
+    /// <summary>Инкарнация протокола Host; меняется между сессиями при заполнении retired binding history.</summary>
+    private string _engineEpoch = Guid.NewGuid().ToString("N");
+    /// <summary>Одна engine epoch не принимает старый binding повторно после disconnect.</summary>
     private readonly HashSet<(string World, string Binding)> _usedBindings = [];
-    /// <summary>Ограничение истории bind/reconnect исключает неограниченную память при churn подключений.</summary>
-    private const int MaxBindings = 4096;
     /// <summary>Строгое UTF-8 без молчаливой замены испорченных секретов/идентификаторов.</summary>
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     /// <summary>Не допускает одновременные циклы RunAsync на одном listener.</summary>
@@ -93,11 +91,21 @@ public sealed class LoopbackHost : IAsyncDisposable
             await FramedStream.WriteAsync(stream, Error("authentication_failed"), handshake.Token);
             return;
         }
-        if (_usedBindings.Count >= MaxBindings || !_usedBindings.Add((epochs.World, epochs.Binding)))
+        if (_usedBindings.Contains((epochs.World, epochs.Binding)))
         {
             await FramedStream.WriteAsync(stream, Error("binding_retired"), handshake.Token);
             return;
         }
+        if (_usedBindings.Count >= _options.MaxRetiredBindings)
+        {
+            // A permanent capacity refusal would prevent recovery after enough reconnects.
+            // Rotate the engine fence before dropping history: an old sequenced frame
+            // remains invalid even if its world/binding pair is used in this new epoch.
+            _engineEpoch = Guid.NewGuid().ToString("N");
+            _usedBindings.Clear();
+            epochs = epochs with { Engine = _engineEpoch };
+        }
+        _usedBindings.Add((epochs.World, epochs.Binding));
         using var session = _factory.Create(epochs);
         try
         {

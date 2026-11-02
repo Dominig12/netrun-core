@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Netrun.Core;
+using Netrun.Core.Runtime;
 using Netrun.Host;
 using Netrun.Protocol;
 using Xunit;
@@ -156,11 +157,62 @@ public sealed class LoopbackHostTests
         }
     }
 
+    /// <summary>History saturation rotates the engine fence rather than permanently rejecting fresh connections.</summary>
+    [Fact]
+    public async Task SaturatedBindingHistoryRotatesEngineAndRejectsOldSequencedFrames()
+    {
+        await using var host = new LoopbackHost(new(0, Token, maxRetiredBindings: 2), new RuntimeHostSessionFactory());
+        using var stop = new CancellationTokenSource();
+        var run = host.RunAsync(stop.Token);
+        string? firstEngine = null;
+        string? rotatedEngine = null;
+        try
+        {
+            for (var index = 0; index < 4; index++)
+            {
+                var binding = "binding-" + index;
+                using var client = new TcpClient { NoDelay = true };
+                await client.ConnectAsync(IPAddress.Loopback, host.Port);
+                var stream = client.GetStream();
+                await FramedStream.WriteAsync(stream, Hello(binding));
+                using var hello = await ReadAsync(stream);
+                Assert.Equal("hello_ack", hello.RootElement.GetProperty("kind").GetString());
+                var engine = hello.RootElement.GetProperty("engine_epoch").GetString()!;
+                firstEngine ??= engine;
+                if (index < 2)
+                    Assert.Equal(firstEngine, engine);
+                else
+                {
+                    Assert.NotEqual(firstEngine, engine);
+                    rotatedEngine ??= engine;
+                    Assert.Equal(rotatedEngine, engine);
+                    var epochs = new Epochs("test-world", index == 2 ? firstEngine : engine, binding);
+                    await FramedStream.WriteAsync(stream, RuntimeJson.Encode(new(epochs, 1, 0,
+                        new ApplyWorld([new SnapshotBegin("snapshot", 0, 3)]))));
+                    using var result = await ReadAsync(stream);
+                    if (index == 2)
+                    {
+                        Assert.Equal("error", result.RootElement.GetProperty("kind").GetString());
+                        Assert.Equal("epoch_mismatch", result.RootElement.GetProperty("code").GetString());
+                    }
+                    else
+                    {
+                        Assert.Equal("output", result.RootElement.GetProperty("kind").GetString());
+                        Assert.Equal("1", result.RootElement.GetProperty("applied_sequence").GetString());
+                    }
+                }
+            }
+        }
+        finally { stop.Cancel(); await run; }
+    }
+
     /// <summary>Секрет не попадает в строковое представление конфигурации или исключение о неправильной форме.</summary>
     [Fact]
     public void HostConfigurationDiagnosticsDoNotRevealToken()
     {
         Assert.DoesNotContain(Token, new LoopbackHostOptions(0, Token).ToString());
         Assert.Throws<ArgumentException>(() => new LoopbackHostOptions(0, "short"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LoopbackHostOptions(0, Token, maxRetiredBindings: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LoopbackHostOptions(0, Token, maxRetiredBindings: 4097));
     }
 }

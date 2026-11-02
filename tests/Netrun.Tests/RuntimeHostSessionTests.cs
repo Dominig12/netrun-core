@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using Netrun.Core;
+using Netrun.Core.Projection;
 using Netrun.Core.Runtime;
 using Netrun.Core.Transport;
 using Netrun.Host;
@@ -54,7 +55,7 @@ public sealed class RuntimeHostSessionTests
         }
 
         /// <summary>Завершает полный bootstrap; checksum v3 вычисляется из decoder-derived raw digest фактического chunk.</summary>
-        internal async Task<byte[]> Synchronize(int checksumVersion = 2, int targetX = 2)
+        internal async Task<byte[]> Synchronize(int checksumVersion = 2, int targetX = 2, int extraNodes = 0)
         {
             WorldChange[] facts =
             [
@@ -64,7 +65,11 @@ public sealed class RuntimeHostSessionTests
                 new ServiceUpsert(new("source", 1, 1, new("source-node", 1), "test.source", "A", true,
                     new([new("read", OperationSafety.ReadOnly)], 64))),
                 new ServiceUpsert(new("target", 1, 1, new("target-node", 1), "test.target", "B", true,
-                    new([new("read", OperationSafety.ReadOnly)], 64)))
+                    new([new("read", OperationSafety.ReadOnly)], 64))),
+                .. Enumerable.Range(0, extraNodes).Select(index => new NodeUpsert(new NodeFact(
+                    "extra-" + index.ToString("D3", CultureInfo.InvariantCulture), 1, 1,
+                    new("C-" + index.ToString("D3", CultureInfo.InvariantCulture), "server", new(index + 3, 1, 1),
+                        "s", true, new("home", "home")))))
             ];
             await Send(new ApplyWorld([new SnapshotBegin("snapshot", 0, checksumVersion)]));
             var chunk = new SnapshotChunk("snapshot", 1, facts);
@@ -220,6 +225,48 @@ public sealed class RuntimeHostSessionTests
         using var retried = JsonDocument.Parse(await session.ProcessAsync(RuntimeJson.Encode(next,
             Counter(drained.RootElement, "output_sequence")), CancellationToken.None));
         Assert.Equal(next.Sequence, Counter(retried.RootElement, "applied_sequence"));
+    }
+
+    /// <summary>Большая source table дробится на bounded replies; ни ACK-only poll, ни replay не теряют её строки.</summary>
+    [Fact]
+    public async Task LargeProjectionDrainsInBoundedRepliesWithoutLosingOrReplayingRows()
+    {
+        using var session = Session(new(Projection: new(PageRows: 1)));
+        var peer = DirectPeer(session);
+        await peer.Synchronize(3, extraNodes: 64);
+        var priorAck = peer.Ack;
+        var first = await peer.Send(new QueryProjection(new(new("ui", 1), ProjectionKind.Routes, new("source-node", 1))));
+        Assert.Equal(first, await session.ProcessAsync(RuntimeJson.EncodePoll(Epochs, priorAck, 128), CancellationToken.None));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        ulong nextPage = 1;
+        var complete = false;
+
+        void ReadRows(byte[] body, bool diagnostic)
+        {
+            using var document = JsonDocument.Parse(body);
+            var results = document.RootElement.GetProperty("results").EnumerateArray().ToArray();
+            Assert.Equal(diagnostic ? 1 : 0, results.Count(entry => entry.GetProperty("kind").GetString() == "runtime_result"));
+            Assert.InRange(results.Length, diagnostic ? 1 : 0, diagnostic ? 9 : 8);
+            foreach (var page in results.Where(entry => entry.GetProperty("kind").GetString() == "projection_page"))
+            {
+                Assert.Equal("ui:1", page.GetProperty("request_id").GetString());
+                Assert.Equal(nextPage++, Counter(page, "page_index"));
+                foreach (var row in page.GetProperty("rows").EnumerateArray())
+                    Assert.True(seen.Add(row.GetProperty("node").GetProperty("node_id").GetString()!), "A projection row is delivered once after ACK");
+                Assert.False(complete, "The terminal page must be last");
+                complete = page.GetProperty("complete").GetBoolean();
+            }
+        }
+
+        ReadRows(first, true);
+        using (var ackOnly = JsonDocument.Parse(await peer.Poll(0)))
+            Assert.Empty(ackOnly.RootElement.GetProperty("results").EnumerateArray());
+        for (var pass = 0; pass < 32 && !complete; pass++)
+            ReadRows(await peer.Poll(128), false);
+        Assert.True(complete, "The query drains without changing simulation time or resubmitting it");
+        Assert.Equal(66, seen.Count);
+        using var drained = JsonDocument.Parse(await peer.Poll(128));
+        Assert.Empty(drained.RootElement.GetProperty("results").EnumerateArray());
     }
 
     /// <summary>Физическое ожидание и poll не двигают виртуальный transit; только новый logical time делает invocation due.</summary>

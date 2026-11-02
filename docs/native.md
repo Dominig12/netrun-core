@@ -66,7 +66,9 @@ escaping и полный размер ответа. Если первый кад
 приостанавливает чтение тела и применяет TCP backpressure. Завершённые входные
 кадры остаются доступны poll после disconnect; незавершённое тело не публикуется.
 
-Connect/read/write выполняются только worker, с partial I/O и select до 50 ms.
+Connect/read/write выполняются только worker, с partial I/O и select до 10 ms.
+TCP_NODELAY исключает ожидание delayed ACK; header и body отправляются одним
+wire buffer без отдельного маленького TCP-пакета под четырёхбайтовый header.
 Connect timeout — 10 секунд физического времени. Close помечает остановку и
 возвращает немедленно; shutdown/close сокета выполняет worker. На DM-потоке нет
 join. Следующий open запрещён, пока прежний worker не подтвердил завершение;

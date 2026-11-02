@@ -235,6 +235,33 @@ class BridgeTests(unittest.TestCase):
         release.set()
         server.finish()
 
+    def test_duplex_burst_preserves_order_and_releases_body_quotas(self):
+        """A full duplex burst crosses queue limits and partial reads without losing frame ownership."""
+        bodies = [json.dumps({"index": index, "body": "x" * 32768}).encode() for index in range(24)]
+        def action(client):
+            client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            for body in bodies:
+                self.assertEqual(body, read_frame(client))
+                client.sendall(wire(body))
+        server = Server(action)
+        self.open(server, frames=8)
+        sent = 0
+        received = []
+        deadline = time.monotonic() + 5
+        while len(received) < len(bodies) and time.monotonic() < deadline:
+            if sent < len(bodies):
+                code = self.call("try_enqueue", bodies[sent])["code"]
+                self.assertIn(code, ("accepted", "would_block"))
+                sent += code == "accepted"
+            received.extend(self.call("poll", "2", "1048576").get("frames", []))
+            time.sleep(0.001)
+        self.assertEqual([body.decode() for body in bodies], received)
+        status = self.wait(lambda: (value if (value := self.call("status")).get("outbound_frames") == 0 else None))
+        self.assertEqual(0, status["outbound_bytes"])
+        self.assertEqual(0, status["inbound_frames"])
+        self.assertEqual(0, status["inbound_bytes"])
+        server.finish()
+
     def test_x86_and_x64_exports_match_declared_legacy_abi(self):
         """Читает PE без загрузки x86 кода в Python x64 и проверяет точные undecorated имена exports."""
         expected = {"netrun_open", "netrun_try_enqueue", "netrun_poll", "netrun_status", "netrun_close"}

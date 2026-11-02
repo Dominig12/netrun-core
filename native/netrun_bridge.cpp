@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -291,7 +292,9 @@ int wait_socket(Socket socket, bool read, bool write, bool& readable, bool& writ
     FD_ZERO(&reads); FD_ZERO(&writes);
     if (read) FD_SET(socket, &reads);
     if (write) FD_SET(socket, &writes);
-    timeval timeout{0, 50 * 1000};
+    // Enqueue is deliberately nonblocking and does not interrupt select. Keep its
+    // maximum wake latency below a native game tick instead of adding 50 ms per request.
+    timeval timeout{0, 10 * 1000};
     const int ready = select(static_cast<int>(socket + 1), read ? &reads : nullptr, write ? &writes : nullptr, nullptr, &timeout);
     readable = ready > 0 && read && FD_ISSET(socket, &reads);
     writable = ready > 0 && write && FD_ISSET(socket, &writes);
@@ -301,6 +304,11 @@ int wait_socket(Socket socket, bool read, bool write, bool& readable, bool& writ
 bool connect_socket(Connection& connection, OwnedSocket& socket) {
     socket.value = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket.value == InvalidSocket) return false;
+    // Small request/response frames must not wait for delayed ACKs of earlier
+    // writes. Framing and partial-write correctness do not depend on Nagle.
+    const int no_delay = 1;
+    if (setsockopt(socket.value, IPPROTO_TCP, TCP_NODELAY,
+        reinterpret_cast<const char*>(&no_delay), sizeof(no_delay)) != 0) return false;
 #ifdef _WIN32
     u_long enabled = 1;
     if (ioctlsocket(socket.value, FIONBIO, &enabled) != 0) return false;
@@ -338,7 +346,7 @@ void release_partial(Connection& connection, bool reserved, std::size_t bytes) {
 }
 /// Выполняет partial reads/writes и ограничивает входную память до allocation тела.
 Error exchange(Connection& connection, Socket socket) {
-    std::array<unsigned char, 4> read_header{}, write_header{};
+    std::array<unsigned char, 4> read_header{};
     std::size_t header_used = 0, receive_size = 0, received = 0, sent = 0;
     bool reserved = false;
     std::string incoming, outgoing;
@@ -349,7 +357,10 @@ Error exchange(Connection& connection, Socket socket) {
             if (!connection.outbound.empty()) {
                 outgoing = std::move(connection.outbound.front()); connection.outbound.pop_front(); sent = 0;
                 const auto size = static_cast<std::uint32_t>(outgoing.size());
-                for (int i = 0; i < 4; ++i) write_header[i] = static_cast<unsigned char>(size >> (24 - i * 8));
+                // One contiguous write avoids two tiny TCP packets with NODELAY.
+                // Quotas continue to count body bytes, including this in-flight body.
+                outgoing.insert(0, 4, '\0');
+                for (int i = 0; i < 4; ++i) outgoing[i] = static_cast<char>(size >> (24 - i * 8));
             }
         }
         if (header_used == 4 && !reserved) {
@@ -386,8 +397,8 @@ Error exchange(Connection& connection, Socket socket) {
             }
         }
         if (writable) {
-            const char* source = sent < 4 ? reinterpret_cast<const char*>(write_header.data() + sent) : outgoing.data() + sent - 4;
-            const std::size_t remaining = sent < 4 ? 4 - sent : outgoing.size() + 4 - sent;
+            const char* source = outgoing.data() + sent;
+            const std::size_t remaining = outgoing.size() - sent;
 #ifdef _WIN32
             const int count = send(socket, source, static_cast<int>(remaining), 0);
 #else
@@ -397,9 +408,9 @@ Error exchange(Connection& connection, Socket socket) {
             else if (count == 0) { error = Error::IoError; break; }
             else {
                 sent += static_cast<std::size_t>(count);
-                if (sent == outgoing.size() + 4) {
+                if (sent == outgoing.size()) {
                     Guard guard(connection.queues, true);
-                    connection.outbound_bytes -= outgoing.size(); --connection.outbound_frames;
+                    connection.outbound_bytes -= outgoing.size() - 4; --connection.outbound_frames;
                     outgoing.clear();
                 }
             }

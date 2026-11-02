@@ -8,6 +8,8 @@ namespace Netrun.Host;
 /// <summary>Composition доменной сессии и подтверждаемого output journal после аутентификации.</summary>
 public sealed class RuntimeHostSession : IHostSession
 {
+    /// <summary>Bounded native apply burst: не более 256 projection rows и одного diagnostic result за ответ.</summary>
+    private const int MaximumEventsPerReply = 8;
     /// <summary>Идентичность одного соединения; poll не может изменить binding или engine.</summary>
     private readonly Epochs _epochs;
     /// <summary>Единственный mutable владелец mirror, graph, routes и packets.</summary>
@@ -41,7 +43,7 @@ public sealed class RuntimeHostSession : IHostSession
         byte[]? result = null;
         RuntimeResult? outcome = null;
         ulong inputSequence = 0;
-        var maximumEvents = 64;
+        var maximumEvents = MaximumEventsPerReply;
         if (message is RuntimePacket packet)
         {
             outcome = _runtime.Apply(packet.Input);
@@ -49,7 +51,7 @@ public sealed class RuntimeHostSession : IHostSession
         }
         else if (message is RuntimePoll poll)
         {
-            maximumEvents = poll.MaxEvents;
+            maximumEvents = Math.Min(poll.MaxEvents, MaximumEventsPerReply);
         }
         _runtime.Pump();
         // Deferred build выполняется в Pump; native peer должен увидеть его readiness в том же logical reply.

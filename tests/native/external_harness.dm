@@ -13,6 +13,7 @@
 #define COMSIG_PARENT_QDELETING "qdeleting"
 #define RUSTG_HASH_SHA256 "sha256"
 #define NETRUN_NODE_APC "apc"
+#define NETRUN_DEFAULT_FIRE_INTERVAL 20
 #define rustg_generate_uuid_v4(...) call_ext(world.params["rust_g"], "uuid_v4")()
 #define rustg_hash_string(algorithm, value) call_ext(world.params["rust_g"], "hash_string")(algorithm, value)
 #define is_station_level(z) TRUE

@@ -15,6 +15,19 @@ Transport framing — unsigned 4-byte big-endian длина и UTF-8 JSON body �
 и `._-`, максимум 64 символа, sequence положительный UInt64. Отдельный producer
 использует возрастающие serials за binding, в том числе после вытеснения history.
 
+Host удерживает не более 4096 retired bindings в одной `engine_epoch`. При
+заполнении истории следующий новый authenticated binding получает новую engine
+epoch, после чего старая история освобождается. Старые sequenced frames остаются
+недопустимыми по engine fence; исчерпание истории не блокирует все последующие
+подключения до перезапуска процесса.
+
+Один ответ Host содержит не более восьми transport/projection events и, для
+logical input, одного `runtime_result`. `poll.max_events` задаёт меньший предел,
+включая ноль для ACK-only запроса. Остальные события сохраняются для следующих
+poll, а output replay до ACK возвращает прежние bytes без повторного исполнения.
+Одна projection page по-прежнему содержит не более 32 rows. Это ограничивает
+объём синхронной обработки DM одного ответа без изменения версии протокола.
+
 ## Discovery
 
 ```json

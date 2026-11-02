@@ -8,33 +8,57 @@ Core. Для Linux подготовлены два согласованных Do
 
 ## Штатный launcher станции
 
-Рядом с checkout станции находится `netrun-core`; другой путь задаётся
-`NETRUN_CORE_SOURCE`. В Windows обычные `Build.bat` и `RUN_SERVER.bat` используют
+Отсутствующий соседний `netrun-core` launcher получает из публичного репозитория
+автоматически по закреплённому commit SHA в `tools/netrun/core-source.json`.
+Существующий checkout и его локальные изменения не обновляются автоматически;
+другой путь задаётся `NETRUN_CORE_SOURCE`. В Windows обычные `Build.bat` и `RUN_SERVER.bat` используют
 Juke targets, которые публикуют Host и x86 DLL из одного immutable source context.
 Перед запуском проверяются source digest и artifact hashes. Launcher создаёт
 ignored token file, ждёт listener Host и запускает DreamDaemon; завершение одного
 процесса закрывает принадлежащую launcher пару. По умолчанию действует `external`.
 
-В Linux из корня станции:
+На Windows portable SDK/Zig автоматически подготавливаются в
+`%LOCALAPPDATA%/NETRUN/toolchains`, либо в `NETRUN_TOOLCHAIN_CACHE`.
+Явные `NETRUN_DOTNET`/`NETRUN_ZIG` и совместимые инструменты из PATH имеют
+приоритет. Официальные archives проверяются закреплёнными hash до распаковки;
+глобальная установка и Codex-specific cache не используются.
+
+В Linux либо Docker Desktop с Linux Engine из корня станции:
 
 ```sh
-export NETRUN_CORE_SOURCE=/reviewed/checkouts/netrun-core
-export NETRUN_CONFIG_DIRECTORY=/reviewed/station/config
-node tools/netrun/docker-lifecycle.mjs build
-node tools/netrun/docker-lifecycle.mjs up --no-build
+node tools/netrun/docker-lifecycle.mjs deploy
+node tools/netrun/docker-lifecycle.mjs status
+node tools/netrun/docker-lifecycle.mjs logs
 ```
 
 Buildx получает минимальный named context с точными bytes исходников и SHA-256
 manifest. Образы `netrun-station` и `netrun-host` помечаются одним digest; launcher
 проверяет его перед запуском. Станция и Host делят loopback namespace и file secret;
 наружу публикуется только игровой порт. Станция ждёт Host, а attached Compose
-останавливает пару при выходе любого контейнера. `down` сохраняет data volume.
+останавливает пару при выходе любого контейнера. `deploy` запускает в фоне;
+`restart` пересоздаёт оба контейнера из сохранённых immutable image IDs.
+`stop` останавливает контейнеры, `down` удаляет их; data volume сохраняется.
+Config монтируется read-only в `/run/netrun/config-source`, затем entrypoint
+копирует его в `/tgstation/config`. Token для BYOND копируется в приватный файл
+`/run/netrun/session-token` с mode 0600; Host читает исходный Compose secret.
+Это требуется в Docker Desktop: файлы Windows bind mounts имеют inode больше
+32 бит, и BYOND x86 не может их читать, хотя 64-битный shell/Host может.
+Named data volume использует native Docker filesystem и не копируется.
+Для unattended smoke включите `RESUME_AFTER_INITIALIZATIONS` в test config:
+обычный пустой мир засыпает после initialization до первого клиента.
+По умолчанию опубликован только `127.0.0.1:1337`; для внешнего сервера задайте
+`NETRUN_GAME_ADDRESS=0.0.0.0` перед deploy. Полная инструкция станции описывает
+config, token, обновление, перенос данных и диагностические команды.
 
-BYOND runtime остаётся в Xenial; TGUI/DM собираются в отдельном pinned Node 24
-Bookworm stage. .NET 10 работает в поддерживаемом runtime image, а bridge строится
-для x86/glibc 2.17. Такой layout не требует запускать Node/.NET внутри Xenial.
-Docker Engine и рабочий WSL локально отсутствуют; Docker build/up и Linux BYOND
-не выполнены. Unit tests launcher не заменяют эти runtime проверки.
+BYOND устанавливается из проверяемого SHA-256 архива закреплённой версии.
+При обрывах крупных HTTPS responses загрузчик использует bounded HTTP ranges
+с проверкой каждого диапазона и полной итоговой контрольной суммы.
+Build и station runtime используют pinned Node 24 Bookworm: Node нужен также
+работающему миру для штатного loadout crypto helper. Совместимые x86 OpenSSL
+libraries поставляются вместе с собранным rust-g. .NET 10 работает в отдельном
+поддерживаемом runtime image, bridge строится для x86/glibc 2.17.
+Cargo для закреплённого NanoMap fallback и build caches подготавливаются автоматически.
+Фактические результаты Windows/Docker проверок перечислены в [verification.md](verification.md).
 
 ## Отдельный Host
 
@@ -137,7 +161,5 @@ g++ -std=c++17 -shared -fPIC -O2 -Wall -Wextra -Werror -fvisibility=hidden \
 python tests/native/test_bridge_linux.py --library native/bin/libnetrun_bridge-x64.so
 ```
 
-Это development toolchain, не установка production-зависимостей. Подготовка этого
-пакета выполнялась в Windows; Docker CLI недоступен. Docker build/Compose запуск
-и Linux ctypes smoke здесь не выполнялись.
-Удалённые GitHub workflows также не считаются пройденными до реального CI run.
+Это development toolchain. Сборку ELF, его runtime-проверку и полный запуск станции
+учитывают отдельно; результаты и ограничения приведены в [verification.md](verification.md).

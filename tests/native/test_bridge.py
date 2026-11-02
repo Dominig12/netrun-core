@@ -5,6 +5,8 @@ import ctypes
 import json
 import os
 from pathlib import Path
+
+from tool_paths import find_dotnet
 import secrets
 import socket
 import struct
@@ -346,7 +348,7 @@ print("NATIVE_PASS module_lifetime", flush=True)
         daemon = compiler.with_name("dd.exe")
         source = ROOT.parent / "MOLOT-BlueMoon-Station"
         integration = source / "modular_bluemoon/code/modules/netrun/integration"
-        dotnet = Path.home() / ".codex/cache/netrun-dotnet/sdk/dotnet.exe"
+        dotnet = find_dotnet()
         pointer = source / "data/netrun-core/build.json"
         if not all(path.is_file() for path in (compiler, daemon, dotnet, pointer,
                 integration / "external_core.dm", integration / "external_effects.dm", source / "rust_g.dll")):

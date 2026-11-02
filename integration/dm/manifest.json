@@ -3,89 +3,121 @@
   "base_revision": "5035c8ecab3a9d3a739c8152fd772f5543084169",
   "files": [
     {
-      "path": "modular_bluemoon/code/modules/netrun/integration/external_core.dm",
-      "sha256": "c7a5a0117b1273ca94ec884af45557a19b21f4b1e361bdc510250b283871ac7a"
+      "path": "code/modules/unit_tests/netrun_core_live.dm",
+      "sha256": "43231ba6e8647883e4559b15d7e5e8ab6b2194d547b12572b4e65dc74d4f12a7"
     },
     {
-      "path": "modular_bluemoon/code/modules/netrun/integration/external_effects.dm",
-      "sha256": "996e6d6cb8457f1b716dcdcc1ed2b1ceff1f1a9cb01707c2b987debaab8857f6"
-    },
-    {
-      "path": "modular_bluemoon/code/modules/netrun/integration/external_queries.dm",
-      "sha256": "45c8e82fddd0e2f28af0316312aa7be9636d1f71e59641a1d0ea2615d0313621"
-    },
-    {
-      "path": "modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm",
-      "sha256": "1e69a1ab928de88ef63d4694b218a73753e871340720e9c8dd016544effb175d"
-    },
-    {
-      "path": "modular_bluemoon/code/modules/netrun/integration/external_projection.dm",
-      "sha256": "f4dfbfaf8209d992aba669e1ae338d495744777961a88525319faffa36c1fd54"
+      "path": "code/modules/unit_tests/netrun_core_recovery.dm",
+      "sha256": "0f7aecc10866ace2d441029d720346f8b0231c20f5c876d61f822637dddb0e7f"
     },
     {
       "path": "code/modules/unit_tests/netrun_external_core.dm",
-      "sha256": "fc0d42932b27533991e4afce43c94be60b75d9d1c2865aee92f50f2023560783"
+      "sha256": "97571aed67025c2cd09024d29eb77e82c5bf21ffe33b09e5b7bac458c494c94d"
+    },
+    {
+      "path": "code/modules/unit_tests/netrun_external_projection.dm",
+      "sha256": "c84fe71c3ee56a9105e033d47df9fdd77ea0887f42e1ca03a458a18a3fa5d325"
     },
     {
       "path": "code/modules/unit_tests/netrun_external_queries.dm",
       "sha256": "0ccde181f936827f31f0ad6fae0d9ec78ba52150d0bfc53d34a7e03a08e6cef0"
     },
     {
-      "path": "code/modules/unit_tests/netrun_external_projection.dm",
-      "sha256": "5b14f6d5326dc59133629e57a96149b08ffa4ab6002c0413a24ecc393ade75cd"
+      "path": "code/modules/unit_tests/netrun_fixture_bus.dm",
+      "sha256": "87f85b9ce1f631c49586ec939d2811fcf5e58b4142ea765d7b47a9daa8cae5db"
     },
     {
-      "path": "code/modules/unit_tests/netrun_core_live.dm",
-      "sha256": "a7d69b3a5735e44bcae73099602b49b41c60d9641c9fb6b1f99e6f07dc44b477"
+      "path": "modular_bluemoon/code/modules/netrun/integration/external_core.dm",
+      "sha256": "4884aee32c0a1135ae131a5e9fcb0fbc485078f29f30b278986ae12e0951df60"
     },
     {
-      "path": "code/modules/unit_tests/netrun_core_recovery.dm",
-      "sha256": "6cad67b35569b97689a7477ef014c5c8c99640de42e57fe3157ab1865b18151d"
+      "path": "modular_bluemoon/code/modules/netrun/integration/external_effects.dm",
+      "sha256": "4d2528b380595f6fb668a8387cd3584abd7d0803bf769304c5efc3d901b24897"
     },
     {
-      "path": "tools/netrun/core-lifecycle.mjs",
-      "sha256": "851cd50ff9aa9971517c34275280854942f079c97edf524be0c3ca2fbf6ee4de"
+      "path": "modular_bluemoon/code/modules/netrun/integration/external_projection.dm",
+      "sha256": "f8c697850e0d797fbb51602d87075c807251ba717646f7249be70c52e6c5623e"
     },
     {
-      "path": "tools/netrun/core-lifecycle.test.mjs",
-      "sha256": "104463a8de0a182a697499a466f3c329e24083e3dd502351b92c2c0307653138"
+      "path": "modular_bluemoon/code/modules/netrun/integration/external_queries.dm",
+      "sha256": "15a63e6222c6c34a28e2164ef1197c6b53749c5212c4539f1daf5124eeba3023"
     },
     {
-      "path": "tools/netrun/docker-lifecycle.mjs",
-      "sha256": "299a8ab5d61e981ec1b1e6147ba87db74eab208a6de2e67f92ec25f76f56b684"
+      "path": "modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm",
+      "sha256": "121e76055c532fca7e70533ad0d6e04529793d443292893a3fb15ecd02ade417"
     },
     {
-      "path": "tools/netrun/docker-lifecycle.test.mjs",
-      "sha256": "3cad1d8de07e3f41407dce6784dfb470263c519d08a81f1f89c5aadf09dcccea"
+      "path": "tools/netrun/EXTERNAL_CORE.md",
+      "sha256": "ba52f2011e22da444227757921bb8ae565e83193e6afb13f39ab84cece4c31f2"
     },
     {
       "path": "tools/netrun/build-core-container.sh",
-      "sha256": "e6ac74ad99720d9553f69bfda5665d3b2e28fdaa40e406eacc3ee38724140d8f"
-    },
-    {
-      "path": "tools/netrun/docker-station-entrypoint.sh",
-      "sha256": "16143691655c4ffc04e52796faa9abb24fdc76205edc30718a916bb2f1d85b48"
+      "sha256": "55445ca71271bdb48d684c5b342e6e50c77b0a4a5e16e91ce83e247e6a3242cc"
     },
     {
       "path": "tools/netrun/compose.yml",
-      "sha256": "4048fcd1f6144b6c578afee3ac92bb448bfedacb2345f329d28e747602a3c210"
+      "sha256": "4b23b38c4c195f1212281856b11174db84305c9459b673e0aca179bc5c40d007"
+    },
+    {
+      "path": "tools/netrun/core-lifecycle.mjs",
+      "sha256": "6a295a44851ec3b277f1994ab977426a8e0f9f8a74bfaa1ccb3d5e2c3c27b058"
+    },
+    {
+      "path": "tools/netrun/core-lifecycle.test.mjs",
+      "sha256": "a4d3ffc21b390d887feb2208074d835a801a4ad5fafd94978e4d5456df890c32"
+    },
+    {
+      "path": "tools/netrun/core-source.json",
+      "sha256": "7a7b717cd06c77b3117979f66f0aa244982fc4a1b269c18f8412e015ade75b8f"
+    },
+    {
+      "path": "tools/netrun/core-source.mjs",
+      "sha256": "cb0afa8311edefe9386dfe45906a1acc7208af37c92f1e5febf9aaa13398e68b"
+    },
+    {
+      "path": "tools/netrun/core-source.test.mjs",
+      "sha256": "a1a3f634774a95784c1b07e7f9a763f5fbaf15cc696c928edb72e136d001971c"
+    },
+    {
+      "path": "tools/netrun/docker-lifecycle.mjs",
+      "sha256": "d1e788771fdb17eb76db0a758f35a17f78fc9056f7fd06c7a1ec1e2575176beb"
+    },
+    {
+      "path": "tools/netrun/docker-lifecycle.test.mjs",
+      "sha256": "8e570530f3549b2d72d6f2e62ca21d8de25b51d4ea339b4d42e312e5e142473a"
+    },
+    {
+      "path": "tools/netrun/docker-station-entrypoint.sh",
+      "sha256": "ead3efe3d0424010f1d91e4ac590247e77989fa920c3da276367dde1f99e233f"
+    },
+    {
+      "path": "tools/netrun/docker-tools.mjs",
+      "sha256": "7e49aebe47ae1abba51e4cd7c8379c5cb219947edc75d5ddbb182a155109d2f5"
+    },
+    {
+      "path": "tools/netrun/docker-tools.test.mjs",
+      "sha256": "df35f3200e0ebee22e1cb55135d0dfbd8e5f14a0268725a0498a3cede55de4e4"
+    },
+    {
+      "path": "tools/netrun/download-byond.mjs",
+      "sha256": "334a7768a7b3185a58c136f8961c07d2557db241a8856b25ef184bc55c045640"
+    },
+    {
+      "path": "tools/netrun/download-byond.test.mjs",
+      "sha256": "36b3816ec5795de439ff37a200f0591cb20c0a5205beb94a12cd977c5a632c0e"
     },
     {
       "path": "tools/netrun/probe-host-lifecycle.mjs",
-      "sha256": "9d38a967d2005f94c5eac65c68a5cc3cd2ed45651c9d40e9baff4713ea3b4cef"
+      "sha256": "619420fb1ab12bbfd74ee081fd64ae26150a66bd1d134ad99a55ca9093debe4e"
     },
     {
       "path": "tools/netrun/run-live-core-test.mjs",
-      "sha256": "3eec410474f97d625796779ea63832628df23285ee7ab6673ac50a76e97eca98"
+      "sha256": "166ce2986fc7643c517a075432993d69b5d9146193901d76185a5fd27c5484c4"
     },
     {
       "path": "tools/netrun/run-live-core-test.test.mjs",
       "sha256": "b0509cabbbb5194c13b02c4aea7fcd91007568e2d44fda99a76b2df752a76ec2"
-    },
-    {
-      "path": "tools/netrun/EXTERNAL_CORE.md",
-      "sha256": "19e6c7d16568ac1e2ec7aca04215e594a70ab5dea8b3947bc3f422ce30af8b15"
     }
   ],
-  "patch_sha256": "5d49adca1635bd838b726020d4ece4cacfbfc7a5769232c65fb001cfc1c7f787"
+  "patch_sha256": "9d75525aec260419a7152558a5591223b99b63c79f3420045eabf5aedfd1621a"
 }

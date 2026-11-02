@@ -4,59 +4,140 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $SourceRoot = (Join-Path $PSScriptRoot '../../MOLOT-BlueMoon-Station')
+    [string] $SourceRoot = (Join-Path $PSScriptRoot '../../MOLOT-BlueMoon-Station'),
+    [string] $BaseRevision
 )
 $ErrorActionPreference = 'Stop'
 $stationRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $bundleRoot = Join-Path $PSScriptRoot '../integration/dm'
+$manifestPath = Join-Path $bundleRoot 'manifest.json'
 $stationGitRoot = (& git -C $stationRoot rev-parse --show-toplevel).Trim()
 if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($stationGitRoot) -ne [IO.Path]::GetFullPath($stationRoot)) {
     throw 'SourceRoot must be the root of the station checkout.'
 }
+# Повторный export после commit сохраняет полную интеграцию относительно прежнего baseline.
+if (!$BaseRevision -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    $BaseRevision = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).base_revision
+}
+if (!$BaseRevision) { $BaseRevision = (& git -C $stationRoot rev-parse HEAD).Trim() }
+if ($BaseRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'BaseRevision must be a full commit SHA.' }
+$resolvedBaseRevision = (& git -C $stationRoot rev-parse --verify "$BaseRevision^{commit}").Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the station base commit.' }
 # Только новые adapter/test файлы; проектный документ пользователя не входит в bundle.
 $newFiles = @(
-    'modular_bluemoon/code/modules/netrun/integration/external_core.dm',
-    'modular_bluemoon/code/modules/netrun/integration/external_effects.dm',
-    'modular_bluemoon/code/modules/netrun/integration/external_queries.dm',
-    'modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm',
-    'modular_bluemoon/code/modules/netrun/integration/external_projection.dm',
-    'code/modules/unit_tests/netrun_external_core.dm',
-    'code/modules/unit_tests/netrun_external_queries.dm',
-    'code/modules/unit_tests/netrun_external_projection.dm',
     'code/modules/unit_tests/netrun_core_live.dm',
     'code/modules/unit_tests/netrun_core_recovery.dm',
+    'code/modules/unit_tests/netrun_external_core.dm',
+    'code/modules/unit_tests/netrun_external_projection.dm',
+    'code/modules/unit_tests/netrun_external_queries.dm',
+    'code/modules/unit_tests/netrun_fixture_bus.dm',
+    'modular_bluemoon/code/modules/netrun/integration/external_core.dm',
+    'modular_bluemoon/code/modules/netrun/integration/external_effects.dm',
+    'modular_bluemoon/code/modules/netrun/integration/external_projection.dm',
+    'modular_bluemoon/code/modules/netrun/integration/external_queries.dm',
+    'modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm',
+    'tools/netrun/EXTERNAL_CORE.md',
+    'tools/netrun/build-core-container.sh',
+    'tools/netrun/compose.yml',
     'tools/netrun/core-lifecycle.mjs',
     'tools/netrun/core-lifecycle.test.mjs',
+    'tools/netrun/core-source.json',
+    'tools/netrun/core-source.mjs',
+    'tools/netrun/core-source.test.mjs',
     'tools/netrun/docker-lifecycle.mjs',
     'tools/netrun/docker-lifecycle.test.mjs',
-    'tools/netrun/build-core-container.sh',
     'tools/netrun/docker-station-entrypoint.sh',
-    'tools/netrun/compose.yml',
+    'tools/netrun/docker-tools.mjs',
+    'tools/netrun/docker-tools.test.mjs',
+    'tools/netrun/download-byond.mjs',
+    'tools/netrun/download-byond.test.mjs',
     'tools/netrun/probe-host-lifecycle.mjs',
     'tools/netrun/run-live-core-test.mjs',
-    'tools/netrun/run-live-core-test.test.mjs',
-    'tools/netrun/EXTERNAL_CORE.md'
+    'tools/netrun/run-live-core-test.test.mjs'
 )
 # Tracked hooks экспортируются обычным diff; существующий игровой код не копируется целиком.
 $hookFiles = @(
-    'tgstation.dme', 'code/modules/unit_tests/_unit_tests.dm',
-    'code/game/world.dm',
-    'Dockerfile', '.dockerignore', '.github/workflows/ci_suite.yml',
-    'tools/build/build.js', 'tools/netrun/run-tests.mjs', 'tools/netrun/run-tests.test.mjs',
-    'modular_bluemoon/code/modules/netrun/core/machine_transport.dm',
-    'modular_bluemoon/code/modules/netrun/core/machine_routes.dm',
-    'modular_bluemoon/code/modules/netrun/core/service_registry.dm',
-    'modular_bluemoon/code/modules/netrun/core/subsystem.dm',
-    'modular_bluemoon/code/modules/netrun/core/node.dm',
-    'modular_bluemoon/code/modules/netrun/core/topology.dm',
-    'modular_bluemoon/code/modules/netrun/core/routes.dm',
-    'modular_bluemoon/code/modules/netrun/core/task_scheduler.dm',
-    'modular_bluemoon/code/modules/netrun/core/console.dm',
-    'modular_bluemoon/code/modules/netrun/core/map_view.dm',
-    'modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm',
+    '.dockerignore',
+    '.github/workflows/ci_suite.yml',
+    'Dockerfile',
+    'code/__DEFINES/netrun.dm',
     'code/game/machinery/telecomms/machine_interactions.dm',
     'code/game/machinery/telecomms/telecomunications.dm',
-    'code/modules/modular_computers/file_system/programs/ntmonitor.dm'
+    'code/game/world.dm',
+    'code/modules/modular_computers/file_system/programs/ntmonitor.dm',
+    'code/modules/unit_tests/_unit_tests.dm',
+    'code/modules/unit_tests/netrun.dm',
+    'code/modules/unit_tests/netrun_availability_queue.dm',
+    'code/modules/unit_tests/netrun_backbone.dm',
+    'code/modules/unit_tests/netrun_carriers.dm',
+    'code/modules/unit_tests/netrun_cli_release.dm',
+    'code/modules/unit_tests/netrun_client_interactions.dm',
+    'code/modules/unit_tests/netrun_combat.dm',
+    'code/modules/unit_tests/netrun_credentials.dm',
+    'code/modules/unit_tests/netrun_cybernetics.dm',
+    'code/modules/unit_tests/netrun_delivery_queue.dm',
+    'code/modules/unit_tests/netrun_execution.dm',
+    'code/modules/unit_tests/netrun_fortress.dm',
+    'code/modules/unit_tests/netrun_geographic.dm',
+    'code/modules/unit_tests/netrun_ice_fairness.dm',
+    'code/modules/unit_tests/netrun_interaction.dm',
+    'code/modules/unit_tests/netrun_map_updates.dm',
+    'code/modules/unit_tests/netrun_map_workspace.dm',
+    'code/modules/unit_tests/netrun_modsuits.dm',
+    'code/modules/unit_tests/netrun_navigation.dm',
+    'code/modules/unit_tests/netrun_npc_breach.dm',
+    'code/modules/unit_tests/netrun_packets.dm',
+    'code/modules/unit_tests/netrun_provider_status.dm',
+    'code/modules/unit_tests/netrun_providers.dm',
+    'code/modules/unit_tests/netrun_refresh.dm',
+    'code/modules/unit_tests/netrun_research_authority.dm',
+    'code/modules/unit_tests/netrun_routes.dm',
+    'code/modules/unit_tests/netrun_routing_cache.dm',
+    'code/modules/unit_tests/netrun_scheduler.dm',
+    'code/modules/unit_tests/netrun_security_deliveries.dm',
+    'code/modules/unit_tests/netrun_topology.dm',
+    'code/modules/unit_tests/netrun_transport.dm',
+    'dependencies.sh',
+    'modular_bluemoon/code/modules/netrun/DEVELOPMENT.md',
+    'modular_bluemoon/code/modules/netrun/README.md',
+    'modular_bluemoon/code/modules/netrun/core/apc_bridges.dm',
+    'modular_bluemoon/code/modules/netrun/core/apc_prebuild.dm',
+    'modular_bluemoon/code/modules/netrun/core/apc_spatial_index.dm',
+    'modular_bluemoon/code/modules/netrun/core/api.dm',
+    'modular_bluemoon/code/modules/netrun/core/breach.dm',
+    'modular_bluemoon/code/modules/netrun/core/console.dm',
+    'modular_bluemoon/code/modules/netrun/core/console_ui.dm',
+    'modular_bluemoon/code/modules/netrun/core/delivery_tasks.dm',
+    'modular_bluemoon/code/modules/netrun/core/execution_limits.dm',
+    'modular_bluemoon/code/modules/netrun/core/location.dm',
+    'modular_bluemoon/code/modules/netrun/core/machine_routes.dm',
+    'modular_bluemoon/code/modules/netrun/core/machine_transport.dm',
+    'modular_bluemoon/code/modules/netrun/core/map_view.dm',
+    'modular_bluemoon/code/modules/netrun/core/network.dm',
+    'modular_bluemoon/code/modules/netrun/core/node.dm',
+    'modular_bluemoon/code/modules/netrun/core/requests.dm',
+    'modular_bluemoon/code/modules/netrun/core/routes.dm',
+    'modular_bluemoon/code/modules/netrun/core/service_discovery.dm',
+    'modular_bluemoon/code/modules/netrun/core/service_registry.dm',
+    'modular_bluemoon/code/modules/netrun/core/subsystem.dm',
+    'modular_bluemoon/code/modules/netrun/core/task_scheduler.dm',
+    'modular_bluemoon/code/modules/netrun/core/topology.dm',
+    'modular_bluemoon/code/modules/netrun/entity/bots.dm',
+    'modular_bluemoon/code/modules/netrun/entity/dive_link.dm',
+    'modular_bluemoon/code/modules/netrun/entity/interactions.dm',
+    'modular_bluemoon/code/modules/netrun/integration/implant_access.dm',
+    'modular_bluemoon/code/modules/netrun/integration/machine_atmos.dm',
+    'modular_bluemoon/code/modules/netrun/integration/machine_research.dm',
+    'modular_bluemoon/code/modules/netrun/integration/machine_telecomms.dm',
+    'modular_bluemoon/code/modules/netrun/items/devices.dm',
+    'modular_bluemoon/code/modules/netrun/machines/windows.dm',
+    'tgstation.dme',
+    'tgui/packages/tgui/interfaces/NetrunTerminal/Content.tsx',
+    'tgui/packages/tgui/interfaces/NetrunTerminal/ImplantWorkspace.test.tsx',
+    'tools/build/build.js',
+    'tools/deploy.sh',
+    'tools/netrun/run-tests.mjs',
+    'tools/netrun/run-tests.test.mjs'
 )
 foreach ($relative in $newFiles) {
     if (!(Test-Path -LiteralPath (Join-Path $stationRoot $relative) -PathType Leaf)) {
@@ -76,16 +157,14 @@ foreach ($relative in $newFiles) {
     $entries += [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 $patchPath = Join-Path $bundleRoot 'station-hooks.patch'
-& git -C $stationRoot diff --binary "--output=$patchPath" HEAD -- @hookFiles
+& git -C $stationRoot diff --binary "--output=$patchPath" $resolvedBaseRevision -- @hookFiles
 if ($LASTEXITCODE -ne 0) { throw 'Cannot export the station integration diff.' }
-$baseRevision = (& git -C $stationRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the station base revision.' }
 $manifest = [ordered]@{
     format = 1
-    base_revision = $baseRevision
+    base_revision = $resolvedBaseRevision
     files = $entries
     patch_sha256 = (Get-FileHash -LiteralPath $patchPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $manifestJson = ($manifest | ConvertTo-Json -Depth 5).Replace("`r`n", "`n") + "`n"
-[IO.File]::WriteAllText((Join-Path $bundleRoot 'manifest.json'), $manifestJson, $utf8)
-Write-Output "Exported $($entries.Count) adapter files and the tracked hook diff. Base: $baseRevision"
+[IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8)
+Write-Output "Exported $($entries.Count) adapter files and the tracked hook diff. Base: $resolvedBaseRevision"

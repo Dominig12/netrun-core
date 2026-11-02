@@ -3,29 +3,28 @@
 Интеграция станции находится в `modular_bluemoon/code/modules/netrun/integration/`:
 `external_core.dm` экспортирует исходные факты и ведёт протокол, а
 `external_effects.dm` удерживает исходные machine messages и исполняет разрешённую
-операцию `message`. C# выбирает маршрут и ведёт transport lifecycle; native
+операции `message` и заменяемого состояния `state`. C# выбирает маршрут и ведёт transport lifecycle; native
 `matches`, `accepts` и `receive` остаются окончательной проверкой игрового действия.
 
 ## Режим и конфигурация
 
-Настройки читаются через `world.GetConfig("env", name)` один раз при инициализации
-SSnetrun. Режим нельзя переключить посреди живого раунда.
+Режим читается через `world.GetConfig("env", name)` до регистрации первого узла
+и фиксируется на раунд. Endpoint и token file перечитываются при bounded recovery.
 
 | Переменная | Значение |
 | --- | --- |
-| `NETRUN_CORE_MODE` | `external` по умолчанию; также `shadow` или явный diagnostic `dm` |
+| `NETRUN_CORE_MODE` | Только `external` (значение по умолчанию) |
 | `NETRUN_CORE_PORT` | Локальный TCP-порт, по умолчанию `18462` |
 | `NETRUN_CORE_LIBRARY` | Windows x86 `netrun_bridge.dll`; Linux x86 `./libnetrun_bridge.so` |
 | `NETRUN_CORE_TOKEN_FILE` | Путь к ignored/mounted файлу с общим session token |
 
-Production default действует и при прямом запуске DreamDaemon. В явном режиме
-`dm` не читаются token/library/port и не открывается IPC. В режиме
-`shadow` source facts уходят во внешний Host, но native effect не исполняется;
-случайный `service_invocation` получает отрицательный результат `shadow_only`.
-В режиме `external` machine dispatch передаёт ownership сообщения внешнему
-executor только после готовности mirror и graph. Недоступность выбранного ядра
-завершает сообщение отказом; автоматического переключения на DM после admission
-нет.
+Production default действует и при прямом запуске DreamDaemon. Значения `dm` и
+`shadow` отклоняются с `invalid_mode` до чтения token/library/port. Нативные
+построители topology, APC mesh/binding, Dijkstra и machine transport удалены.
+Machine dispatch передаёт ownership сообщения внешнему executor после готовности
+mirror и graph. Недоступность ядра завершает сообщение отказом.
+Первый успешный handshake с опубликованным graph за binding отмечается фиксированным
+`NETRUN_CORE_READY external graph_published`; marker не содержит секретов.
 
 Файл секрета ограничен 1024 байтами. После удаления внешних пробельных символов
 token должен содержать 32..256 printable ASCII символов без пробелов. Сам token
@@ -104,6 +103,16 @@ Semantic `would_block` потребляет outer input sequence, но след�
 tag, неизменность payload, deadline, текущие `matches` и `accepts`. Имена proc и
 typepath из входного сообщения не исполняются.
 
+Заменяемые snapshots явно возвращают `coalescing_key()` и используют отдельный
+ordered/idempotent `state` contract. `request_submit` передаёт этот key и optional
+положительную `state_revision`. Research native revision 0 отображается в wire
+revision 1. C# сохраняет первый request ID и due, заменяя payload и opaque contexts
+при новой либо равной revision. DM переносит актуальный message, user weakref и
+payload proof в сохранённый context; superseded request освобождает свой slot
+без второго callback. Более старая revision оставляет актуальное состояние.
+Полные research snapshots и compact state используют разные keys. Обычные команды
+сохраняют mutating `message` contract и отдельные outcomes.
+
 Перед native callbacks и повторно после них проверяются текущий binding,
 service/node identities, ACK всех известных infrastructure facts, exact endpoint
 node revisions и C# `infra_stamp`/`av_infra_stamp`. Старый invocation из output
@@ -159,9 +168,9 @@ result pointers остаются закреплены. Отдельный FIFO �
 source-fact prefix, поэтому более новые несвязанные изменения не требуют idle-окна.
 
 `code/modules/unit_tests/netrun_external_core.dm` содержит hermetic cases для
-явного diagnostic DM без IPC, decimal counters, semantic retry, nested payload shape,
+fake IPC при настоящем native dispatcher, decimal counters, semantic retry, nested payload shape,
 identity/tag checks, invocation dedup, native exception, disconnect во время
-yield, watermark pressure, shadow и logical clock. Запуск в checkout станции:
+yield, watermark pressure, отказ удалённых режимов, state coalescing и logical clock. Запуск в checkout станции:
 
 ```sh
 node tools/netrun/run-tests.mjs --filter external_core

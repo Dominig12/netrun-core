@@ -80,6 +80,6 @@ Mutable runtime имеет одного последовательного вл�
 - [Правила DM](docs/audit.md) и [проверки](docs/verification.md).
 - [Исходный проектный документ](docs/CSHARP_CORE_DESIGN.md) — архивная концепция.
 
-Production требует отдельной проверки Linux BYOND ABI, полного игрового цикла
-и измерения end-to-end нагрузки. Сборка C# и cross-compile SO по отдельности
-этого не доказывают.
+Linux BYOND x86 и полный Compose проверены реальным запуском; оставшиеся ошибки
+карты/погружения и recovery перечислены в [verification.md](docs/verification.md).
+Полный игровой цикл и end-to-end нагрузка ещё требуют проверки.

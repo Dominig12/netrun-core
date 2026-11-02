@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+
+from tool_paths import find_dotnet
 import secrets
 import shutil
 import socket
@@ -70,7 +72,7 @@ def run(arguments: argparse.Namespace) -> None:
     for required in [*included, library, rust_g]:
         if not required.is_file():
             raise RuntimeError(f"required_file_missing: {required}")
-    dotnet = tool_path(arguments.dotnet, "dotnet", Path.home() / ".codex/cache/netrun-dotnet/sdk/dotnet.exe")
+    dotnet = tool_path(str(find_dotnet(arguments.dotnet)), "dotnet", Path("dotnet.exe"))
     byond_bin = Path(arguments.byond_bin)
     compiler = tool_path(None, "dm", byond_bin / "dm.exe")
     daemon = tool_path(None, "dd", byond_bin / "dd.exe")

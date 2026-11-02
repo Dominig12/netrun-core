@@ -135,11 +135,36 @@
 	outcomes["delivered"] = (outcomes["delivered"] || 0) + 1
 /datum/netrun_machine_message/proc/failed(reason)
 	outcomes["failed"] = (outcomes["failed"] || 0) + 1
+/datum/netrun_machine_message/proc/coalescing_key()
+	return null
+/datum/netrun_machine_message/proc/transport_operation()
+	return "message"
+/datum/netrun_machine_message/proc/transport_revision()
+	return null
+/datum/netrun_machine_message/proc/can_replace(datum/netrun_machine_message/previous)
+	return TRUE
 /datum/netrun_machine_message/telecomms
 	var/datum/signal/signal
 /datum/signal
 	var/frequency
 /datum/netrun_machine_message/communications
+
+/// Tiny protocol world не имеет игрового UI; station regression проверяет настоящие journals/captures.
+/datum/netrun_packet_context
+	var/operation_id
+/datum/netrun_packet_context/New(kind, label, from_address, to_address, service_id, console, nonce, operation_id)
+	src.operation_id = operation_id
+/datum/netrun_packet_context/proc/capture(list/payload)
+	return
+/datum/netrun_packet_context/proc/queued(list/route, delay, announce)
+	return
+/datum/netrun_packet_context/proc/running()
+	return
+/datum/netrun_packet_context/proc/receive(list/route)
+	return
+/datum/netrun_packet_context/proc/finish(outcome, reason)
+	return
+
 /proc/netrun_communication_policy(datum/netrun_machine_service/source, destination_id)
 	return FALSE
 /datum/netrun_machine_transport

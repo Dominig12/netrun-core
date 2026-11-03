@@ -7,6 +7,10 @@ using Netrun.Core.Transport;
 
 namespace Netrun.Core.Storage;
 
+/// <summary>Immutable top-level file metadata; вложенная память не материализуется при cooperative обходе.</summary>
+public sealed record StoredFileHeader(FileKey File, ulong Revision, string Name, string Kind, string Content,
+    int Size, FileCapabilities Capabilities);
+
 /// <summary>
 /// Единоличный владелец сетевых носителей и immutable file payload. Все мутации атомарны на одном Core owner;
 /// здесь нет socket/native I/O или собственного планировщика исполнения команд.
@@ -242,6 +246,18 @@ public sealed class StorageWorld
 
     /// <summary>Scalar revision lookup не материализует recursive file view при bootstrap/capacity обновлении.</summary>
     public ulong? ReadStoreRevision(StoreKey key) => _stores.TryGetValue(key, out var disk) ? disk.Revision : null;
+
+    /// <summary>Scalar immutable definition без материализации файлов; caller отдельно захватывает store revision.</summary>
+    public StorageDefinition? ReadStoreDefinition(StoreKey key) => _stores.TryGetValue(key, out var disk) ? disk.Definition : null;
+
+    /// <summary>Выдаёт один top-level header за шаг; caller проверяет ReadStoreRevision перед каждым MoveNext.</summary>
+    public IEnumerable<StoredFileHeader> EnumerateStoreFiles(StoreKey key)
+    {
+        if (!_stores.TryGetValue(key, out var disk)) yield break;
+        foreach (var file in disk.Files)
+            yield return new(file.Key, file.Revision, file.Definition.Name, file.Definition.Kind,
+                file.Definition.Content, file.Size, file.Definition.Capabilities);
+    }
 
     /// <summary>Trusted внутренний lookup; права пользовательского чтения проверяются Apply(ReadStorage).</summary>
     public StoredFileView? ReadFile(FileKey key) => _files.TryGetValue(key, out var entry) ? View(entry) : null;

@@ -9,6 +9,16 @@ public sealed class ValueList<T> : IReadOnlyList<T>, IEquatable<ValueList<T>>
     /// <summary>Собственная копия; наружу не выдаётся даже как массив.</summary>
     private readonly T[] _items;
 
+    /// <summary>Internal cooperative owners may transfer a fully populated array without a second traversal.</summary>
+    private ValueList(T[] items) => _items = items;
+
+    /// <summary>Transfers exclusive array ownership; caller must discard every mutable alias after this call.</summary>
+    internal static ValueList<T> TakeOwnership(T[] items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        return new(items);
+    }
+
     /// <summary>Копирует максимум maximum элементов, отказывая до неограниченного перечисления.</summary>
     public ValueList(IEnumerable<T> items, int maximum = 4096)
     {

@@ -66,7 +66,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
     private EntityNavigationBroker? _entityNavigation;
     /// <summary>Число независимых work/output lanes одного последовательного владельца.</summary>
     private const int LaneCount = 6;
-    private const int OutputLaneCount = 11;
+    private const int OutputLaneCount = 12;
     /// <summary>Первый work producer следующего Pump; единичный budget справедлив между calls.</summary>
     private int _nextPumpLane;
     /// <summary>Независимый round-robin transport/discovery/projection outputs.</summary>
@@ -115,7 +115,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
     /// <summary>Число незавершённых bounded запросов; после Dispose — ноль.</summary>
     public int ActiveRequestCount => _transport?.ActiveCount ?? 0;
     /// <summary>Число ожидающих отдачи transport events; payload не включается в диагностику.</summary>
-    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_serviceWatches?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0) + (_entityNavigation?.EventCount ?? 0) + (_entities?.EventCount ?? 0) + (_tasks?.EventCount ?? 0) + _moduleEvents.Count + StorageEventCount + CombatEventCount;
+    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_serviceWatches?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0) + (_entityNavigation?.EventCount ?? 0) + (_entities?.EventCount ?? 0) + (_tasks?.EventCount ?? 0) + _moduleEvents.Count + StorageEventCount + CombatEventCount + BotEventCount;
     /// <summary>Число незавершённых поисков путей сущностей, включая ожидающие выдачи страницы.</summary>
     public int ActiveEntityNavigationCount => _entityNavigation?.ActiveCount ?? 0;
     /// <summary>Количество активных async lookup, независимо от machine request slots.</summary>
@@ -427,6 +427,9 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
                         break;
                     case SubmitModuleRequest module:
                         admission = _tasks!.Enqueue(module.Request.Key, new EntityWork(module), ModuleRequestRules.Fingerprint(module.Request)!);
+                        break;
+                    case PublishBotFact or RemoveBot or SubmitBotOrder or RememberBotAttacker or WakeBot or FinishBotEffect:
+                        admission = EnqueueBot(input.Command);
                         break;
                     case ConfigureBackbone backbone:
                         _availability.SetBackbone(backbone.Enabled);
@@ -766,6 +769,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
         if (lane == 8 && _moduleEvents.TryDequeue(out transportEvent)) return true;
         if (lane == 9 && _storageEvents.TryDequeue(out transportEvent)) return true;
         if (lane == 10 && TryCombatEvent(out transportEvent)) return true;
+        if (lane == 11 && TryBotEvent(out transportEvent)) return true;
         transportEvent = null;
         return false;
     }
@@ -779,6 +783,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
         _moduleEvents.Clear();
         StopStorage();
         StopCombat();
+        StopBots();
         _tasks?.Dispose();
         _tasks = null;
         _entities?.Dispose();

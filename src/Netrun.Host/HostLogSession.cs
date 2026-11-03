@@ -1,7 +1,9 @@
 using Netrun.Core;
+using Netrun.Core.Entities.Bots;
 using Netrun.Core.Runtime;
 using Netrun.Core.Transport;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace Netrun.Host;
 
@@ -61,11 +63,23 @@ internal sealed class HostLogSession(HostLog log, string connectionId, Epochs ep
             CancelEntityNavigation navigation => navigation.Key,
             SubmitEntityOperation entity => entity.Operation.Key,
             FinishEntityEffect entity => entity.Key,
+            ConfigureBot bot => bot.Key,
+            RemoveBot bot => bot.Key,
+            SubmitBotOrder bot => bot.Key,
+            RememberBotAttacker bot => bot.Key,
+            WakeBot bot => bot.Key,
+            FinishBotEffect bot => bot.Key,
+            QueryBot bot => bot.Key,
             _ => result.Admission?.Key
         };
         log.TryWrite(new(level, rejected ? "command_rejected" : "command_applied", connectionId, epochs,
             InputSequence: input.Sequence, RequestId: request?.Id,
-            InvocationId: (input.Command as FinishInvocation)?.Result.InvocationId,
+            InvocationId: input.Command switch
+            {
+                FinishInvocation invocation => invocation.Result.InvocationId,
+                FinishBotEffect bot => BotEffectCorrelation(bot.Result.Bot, bot.Result.ActionSerial),
+                _ => null
+            },
             Command: input.Command.GetType().Name,
             Code: result.ErrorCode ?? result.Admission?.Code ?? result.Action?.Code ?? result.Apply.Code,
             State: result.Apply.Status.ToString()));
@@ -75,7 +89,7 @@ internal sealed class HostLogSession(HostLog log, string connectionId, Epochs ep
     internal HostLogEvent? DescribeEvent(TransportEvent entry)
     {
         var level = entry is RequestCompleted { State: RequestState.Failed or RequestState.TimedOut or RequestState.OutcomeUnknown } or
-            Netrun.Core.Scheduling.CoreTaskCompleted { Success: false }
+            Netrun.Core.Scheduling.CoreTaskCompleted { Success: false } or BotCommandCompleted { Accepted: false }
             ? HostLogLevel.Warning : HostLogLevel.Debug;
         if (!log.IsEnabled(level)) return null;
         return new(level, entry switch
@@ -85,16 +99,32 @@ internal sealed class HostLogSession(HostLog log, string connectionId, Epochs ep
             Netrun.Core.Entities.EntityNativeEffect => "entity_effect_issued",
             Netrun.Core.Entities.EntityChanged => "entity_changed",
             Netrun.Core.Scheduling.CoreTaskCompleted => "core_task_completed",
+            BotCommandCompleted => "bot_completed",
+            BotNativeDecision => "bot_native_decision_issued",
             _ => "projection_issued"
         }, connectionId, epochs, RequestId: entry.Key.Id,
-            InvocationId: (entry as ServiceInvocation)?.InvocationId ?? (entry as Netrun.Core.Entities.EntityNativeEffect)?.EffectId,
+            InvocationId: entry switch
+            {
+                ServiceInvocation invocation => invocation.InvocationId,
+                Netrun.Core.Entities.EntityNativeEffect entity => entity.EffectId,
+                BotNativeDecision bot => BotEffectCorrelation(bot.Effect.Bot, bot.Effect.ActionSerial),
+                _ => null
+            },
             Code: entry switch
             {
                 RequestCompleted request => request.Code,
                 Netrun.Core.Entities.EntityChanged entity => entity.Code,
                 Netrun.Core.Scheduling.CoreTaskCompleted task => task.Code,
+                BotCommandCompleted bot => bot.Code,
+                BotNativeDecision { Effect.Action: BotWarning warning } => warning.Code,
+                BotNativeDecision { Effect.Action: BotCancelAction } => "cancel_action",
                 _ => null
-            }, State: (entry as RequestCompleted)?.State.ToString());
+            }, State: entry switch
+            {
+                RequestCompleted request => request.State.ToString(),
+                BotCommandCompleted bot => bot.Accepted ? "accepted" : "rejected",
+                _ => null
+            });
     }
 
     /// <summary>Output sequence назначается после проверки границы кадра, включая отложенный entry.</summary>
@@ -102,6 +132,10 @@ internal sealed class HostLogSession(HostLog log, string connectionId, Epochs ep
     {
         if (entry is not null) log.TryWrite(entry with { OutputSequence = outputSequence });
     }
+
+    /// <summary>Relate a native presentation decision to its exact bot-generation ACK without logging its payload.</summary>
+    private static string BotEffectCorrelation(BotKey bot, ulong serial) =>
+        $"{bot.Id}:{bot.Generation.ToString(CultureInfo.InvariantCulture)}:{serial.ToString(CultureInfo.InvariantCulture)}";
 
     /// <summary>Изменение здоровья видно независимо от opt-in live monitor; логические часы не продвигаются.</summary>
     internal void Health(MirrorSyncState state, string? topology, string? communication)

@@ -52,6 +52,8 @@ public sealed class EntityWorld : IDisposable
     public int Count => _actors.Count;
     /// <summary>Число непрочитанных immutable projections/effects.</summary>
     public int EventCount => _events.Count;
+    /// <summary>Монотонная версия registry/read-model; cooperative readers отвергают смешанный снимок.</summary>
+    public ulong StateVersion { get; private set; }
     /// <summary>Не больше одного deadline на живой процесс, независимо от частоты обновления статусов.</summary>
     public int PendingDeadlineCount => _deadlines.Count;
 
@@ -71,6 +73,13 @@ public sealed class EntityWorld : IDisposable
 
     /// <summary>Читает точное поколение; recycled identity не разрешается в новый actor.</summary>
     public EntityView? Read(ActorKey key) => _actors.TryGetValue(key.Id, out var actor) && actor.View.Actor == key ? actor.View : null;
+
+    /// <summary>Перечисляет immutable views без копирования registry; caller проверяет StateVersion между шагами.</summary>
+    public IEnumerable<EntityView> Enumerate()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        foreach (var actor in _actors.Values) yield return actor.View;
+    }
 
     /// <summary>Проверяет replay и резервирует output до любой мутации процесса.</summary>
     public TransportAdmission Submit(EntityOperation operation, int simulationTimeDs)
@@ -223,6 +232,7 @@ public sealed class EntityWorld : IDisposable
         {
             if (actor.Deadline is { } deadline) _deadlines.Remove(deadline);
             _actors.Remove(operation.Actor.Id);
+            StateVersion = Next(StateVersion);
             _events.Enqueue(new EntityChanged(_binding, operation.Key, operation.Actor, null, deletion.Code));
             return "accepted";
         }
@@ -278,6 +288,7 @@ public sealed class EntityWorld : IDisposable
                 actor.Pending = effect;
                 actor.PendingHandedOff = false;
                 actor.View = view with { PendingEffectId = effect.EffectId, Revision = Next(view.Revision) };
+                StateVersion = Next(StateVersion);
                 _events.Enqueue(effect);
                 Schedule(actor);
                 return "accepted";
@@ -296,6 +307,7 @@ public sealed class EntityWorld : IDisposable
     /// <summary>Добавляет projection и единственную ближайшую status/lifetime границу текущей ревизии.</summary>
     private void Changed(Actor actor, RequestKey key, string code)
     {
+        StateVersion = Next(StateVersion);
         _events.Enqueue(new EntityChanged(_binding, key, actor.View.Actor, actor.View, code));
         Schedule(actor);
     }

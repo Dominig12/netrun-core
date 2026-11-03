@@ -59,6 +59,7 @@ public sealed partial class NetworkRuntime
         _tasks = new CoreTaskQueue<EntityWork>(_epochs.Binding, ExecuteEntityTask, _options.Tasks);
         InitializeStorage();
         InitializeCombat();
+        InitializeBots();
         _moduleSessions = _pluginRegistry.Modules.CreateSessions(new ModuleContext(_epochs.Binding,
             key => _entities.Read(key), () => SimulationTimeDs));
     }
@@ -92,15 +93,16 @@ public sealed partial class NetworkRuntime
         var automaticBudget = budget - work > 1 ? (budget - work) / 2 : (_automaticEntityTurn ? budget - work : 0);
         var automaticWork = 0;
         var start = _automaticEntityLane;
-        _automaticEntityLane = (start + 1) % 3;
-        for (var offset = 0; offset < 3 && automaticWork < automaticBudget; offset++)
+        _automaticEntityLane = (start + 1) % 4;
+        for (var offset = 0; offset < 4 && automaticWork < automaticBudget; offset++)
         {
             var remaining = automaticBudget - automaticWork;
-            automaticWork += ((start + offset) % 3) switch
+            automaticWork += ((start + offset) % 4) switch
             {
                 0 => _entities.Advance(SimulationTimeDs, remaining),
                 1 => AdvanceStorage(SimulationTimeDs, remaining),
-                _ => AdvanceCombat(SimulationTimeDs, remaining)
+                2 => AdvanceCombat(SimulationTimeDs, remaining),
+                _ => AdvanceBots(SimulationTimeDs, remaining)
             };
         }
         work += automaticWork;
@@ -122,6 +124,7 @@ public sealed partial class NetworkRuntime
     {
         if (IsStorageCommand(work.Command)) return ExecuteStorageTask(work, budget);
         if (IsCombatCommand(work.Command)) return ExecuteCombatTask(work, budget);
+        if (IsBotCommand(work.Command)) return ExecuteBotTask(work, budget);
         if (work.Command is SubmitModuleRequest module) return ExecuteModuleTask(work, module.Request, budget);
         if (work.Command is FinishEntityEffect finish)
         {

@@ -175,6 +175,11 @@ internal static class RuntimeFingerprint
                     if (combatFingerprint is null) return null;
                     writer.Write((byte)23); writer.Write(combatFingerprint);
                     break;
+                case PublishBotFact or RemoveBot or SubmitBotOrder or RememberBotAttacker or WakeBot or FinishBotEffect:
+                    var botFingerprint = NetworkRuntime.BotCommandFingerprint(input.Command);
+                    if (botFingerprint is null) return null;
+                    writer.Write((byte)24); writer.Write(botFingerprint);
+                    break;
                 default:
                     return null;
             }

@@ -6,6 +6,7 @@ using Netrun.Core.Transport;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
 using Netrun.Core.Entities;
+using Netrun.Core.Entities.Bots;
 using Netrun.Core.Scheduling;
 using Netrun.Core.Plugins;
 using Netrun.Protocol;
@@ -199,6 +200,18 @@ internal static class RuntimeOutputJson
                     Counter(writer, "task_sequence", completed.TaskSequence);
                     writer.WriteBoolean("success", completed.Success);
                     writer.WriteString("code", completed.Code);
+                    break;
+                case BotCommandCompleted bot:
+                    writer.WriteString("kind", "bot_completed");
+                    writer.WritePropertyName("bot"); RuntimeJson.WriteBotKey(writer, bot.Bot);
+                    writer.WriteBoolean("accepted", bot.Accepted); writer.WriteString("code", bot.Code);
+                    writer.WritePropertyName("view"); RuntimeJson.WriteBotView(writer, bot.View);
+                    break;
+                case BotNativeDecision bot:
+                    if (bot.Effect.Action is not (BotWarning or BotCancelAction))
+                        throw new ProtocolException("bot_native_action_invalid");
+                    writer.WriteString("kind", "bot_native_decision");
+                    writer.WritePropertyName("effect"); RuntimeJson.WriteBotEffect(writer, bot.Effect);
                     break;
                 case ModuleCompleted module:
                     writer.WriteString("kind", "module_result"); writer.WriteString("module_id", module.ModuleId);

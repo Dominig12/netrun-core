@@ -128,6 +128,27 @@ public sealed partial class BotEngine : IDisposable
     public int Count => _brains.Count;
     /// <summary>Непереданные эффекты, включая отозванные до handoff записи до следующего dequeue.</summary>
     public int EventCount => _effects.Count;
+    /// <summary>Ближайшая работа без продвижения часов, переноса deadlines или выполнения brain.</summary>
+    public int? NextWakeDs => _ready.Count > 0 ? _now : _deadlines.Min?.AtDs;
+
+    /// <summary>Неизменяемое определение профиля для проверки Core configuration; loadout этим не выдаётся.</summary>
+    public BotProfile? ReadProfile(string id)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _profiles.GetValueOrDefault(id);
+    }
+
+    /// <summary>
+    /// Только выбирает следующую готовую работу для admission в общую Core FIFO.
+    /// Не изменяет clock, ready queue или deadline и не начинает вычисление brain.
+    /// </summary>
+    public BotKey? NextReadyBot(int simulationTimeDs)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (simulationTimeDs < _now) throw new ArgumentOutOfRangeException(nameof(simulationTimeDs));
+        if (_ready.First is { } ready) return ready.Value;
+        return _deadlines.Min is { } due && due.AtDs <= simulationTimeDs ? due.Bot : null;
+    }
 
     /// <summary>Применяет новую immutable публикацию; старые поколения/revisions и capacity отвергаются без мутации.</summary>
     public bool Upsert(BotFact fact)
@@ -245,11 +266,42 @@ public sealed partial class BotEngine : IDisposable
             _ready.RemoveFirst();
             _readyEntries.Remove(key);
             if (!Find(key, out var brain)) continue;
-            if (brain.Retired) continue;
-            Tick(brain);
-            Schedule(brain);
+            RunBrain(brain);
         }
         return steps;
+    }
+
+    /// <summary>
+    /// Выполняет одну уже принятую общим Runtime FIFO работу точного поколения.
+    /// Давление output сохраняет ready/deadline; другие боты и их порядок не изменяются.
+    /// </summary>
+    public int AdvanceBot(BotKey key, int simulationTimeDs)
+    {
+        Clock(simulationTimeDs);
+        if (!Find(key, out var brain)) return 0;
+        var ready = _readyEntries.TryGetValue(key, out var entry);
+        var due = brain.Scheduled is { } scheduled && scheduled.AtDs <= _now;
+        if (!ready && !due || !brain.Retired && _effects.Count >= _options.MaxEffects) return 0;
+        if (ready)
+        {
+            _ready.Remove(entry!);
+            _readyEntries.Remove(key);
+        }
+        if (brain.Scheduled is { } previous)
+        {
+            _deadlines.Remove(previous);
+            brain.Scheduled = null;
+        }
+        RunBrain(brain);
+        return 1;
+    }
+
+    /// <summary>Общий single-brain dispatcher для standalone и Runtime FIFO adapters.</summary>
+    private void RunBrain(Brain brain)
+    {
+        if (brain.Retired) return;
+        Tick(brain);
+        Schedule(brain);
     }
 
     /// <summary>Передаёт эффект единожды, пропуская отменённые до handoff entries.</summary>

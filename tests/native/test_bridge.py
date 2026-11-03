@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from tool_paths import find_dotnet
+from external_fixture import prepare_external_wrapper
 import secrets
 import socket
 import struct
@@ -451,9 +452,7 @@ print("NATIVE_PASS module_lifetime", flush=True)
 \tshutdown()''')
             fixture = directory / "harness.dm"
             fixture.write_text(harness, encoding="utf-8")
-            wrapper = directory / "harness.dme"
-            wrapper.write_text("".join(f'#include "{path.as_posix()}"\n' for path in
-                (fixture, integration / "external_core.dm", integration / "external_effects.dm")), encoding="utf-8")
+            wrapper = prepare_external_wrapper(source, directory, fixture)
             built = subprocess.run([str(compiler), str(wrapper)], cwd=directory, capture_output=True,
                                    text=True, timeout=30, creationflags=HIDDEN)
             self.assertEqual(0, built.returncode, built.stdout + built.stderr)

@@ -21,6 +21,11 @@
 #define UNIX "UNIX"
 #define QDEL_NULL(value) if(value) { qdel(value); value = null; }
 #define IS_FINITE(value) (isnum(value) && (value) == (value) && abs(value) <= 3.402823466e38)
+// Tiny world не имеет MC; frame boundaries всегда уступают CPU, не меняя production pumps.
+#define CHECK_TICK sleep(0)
+#define SECONDS * 10
+#define TICK_USAGE_REAL world.tick_usage
+#define TICK_DELTA_TO_MS(percent_of_tick_used) ((percent_of_tick_used) * world.tick_lag)
 
 /// Tiny harness не подменяет production qdel; только освобождает собственные fixture datums.
 /proc/qdel(datum/value)
@@ -184,6 +189,35 @@
 var/global/datum/controller/subsystem/netrun/SSnetrun = new
 var/global/datum/external_mapping_fixture/SSmapping = new
 
+/// Churn привязан к границе snapshot scan, а не к внешнему таймеру между async pump iterations.
+/datum/netrun_external_core/external_fixture
+	var/list/fixture_state
+/datum/netrun_external_core/external_fixture/advance_snapshot(max_records, max_journal_records = 128)
+	// Один node за scan сохраняет видимую services boundary даже при маленьком fixture мире.
+	. = ..(snapshot_phase == "nodes" ? 1 : max_records, max_journal_records)
+	if(snapshot_phase != "services" || !fixture_state || fixture_state["replaced"])
+		return
+	var/datum/netrun_machine_service/service = fixture_state["service"]
+	var/datum/component/netrun_node/node = fixture_state["node"]
+	var/obj/machinery/power/apc/host = fixture_state["host"]
+	forget_service(service)
+	SSnetrun.machine_transport.services -= "fixture"
+	SSnetrun.nodes_by_address -= node.address
+	on_node_unregistered(SSnetrun, node)
+	node = new
+	node.parent = host
+	node.address = "APC-TEST"
+	SSnetrun.nodes_by_address[node.address] = node
+	on_node_registered(SSnetrun, node)
+	service = new
+	service.host = host
+	service.node = node
+	SSnetrun.machine_transport.services["fixture"] = service
+	observe_service(service)
+	fixture_state["node"] = node
+	fixture_state["service"] = service
+	fixture_state["replaced"] = TRUE
+
 /world
 	maxx = 8
 	maxy = 8
@@ -206,37 +240,22 @@ var/global/datum/external_mapping_fixture/SSmapping = new
 	service.host = host
 	service.node = node
 	SSnetrun.machine_transport.services["fixture"] = service
-	var/datum/netrun_external_core/client = new(SSnetrun)
+	var/datum/netrun_external_core/external_fixture/client = new(SSnetrun)
+	client.fixture_state = list("node" = node, "service" = service, "host" = host, "replaced" = FALSE)
 	var/token = file2text(world.params["token_file"])
 	if(!client.open(world.params["library"], world.params["port"], token))
 		world.log << "EXTERNAL_FAIL configuration"
 		shutdown()
 		return
 	var/list/old_key = client.node_key(node)
-	var/replaced = FALSE
 	var/deadline = world.time + 150
 	while(world.time < deadline && !client.ready && client.state != "resync_required")
-		if(!replaced && client.snapshot_phase == "services")
-			// Замена во время обхода: удаление не теряется, новый компонент получает новый opaque ID.
-			client.forget_service(service)
-			SSnetrun.machine_transport.services -= "fixture"
-			SSnetrun.nodes_by_address -= node.address
-			client.on_node_unregistered(SSnetrun, node)
-			node = new
-			node.parent = host
-			node.address = "APC-TEST"
-			SSnetrun.nodes_by_address[node.address] = node
-			client.on_node_registered(SSnetrun, node)
-			service = new
-			service.host = host
-			service.node = node
-			SSnetrun.machine_transport.services["fixture"] = service
-			client.observe_service(service)
-			replaced = TRUE
 		client.tick(2)
 		sleep(1)
+	node = client.fixture_state["node"]
+	service = client.fixture_state["service"]
 	var/list/new_key = client.node_key(node)
-	if(!client.ready || !replaced || old_key["id"] == new_key["id"] || client.resolve_node(old_key["id"], "1"))
+	if(!client.ready || !client.fixture_state["replaced"] || old_key["id"] == new_key["id"] || client.resolve_node(old_key["id"], "1"))
 		world.log << "EXTERNAL_FAIL synchronization [client.last_error || client.state]"
 		client.close()
 		shutdown()
@@ -262,10 +281,34 @@ var/global/datum/external_mapping_fixture/SSmapping = new
 		client.close()
 		shutdown()
 		return
+	// Полностью дренируем настоящий lifecycle перед idle heartbeat: никаких искусственных outcomes.
+	deadline = world.time + 100
+	while(world.time < deadline && (length(executor.request_commands) || length(executor.control_commands) || length(executor.inflight_commands) || length(client.inflight_frames) || client.pending_frame || client.sent_output_ack != client.ack_output_sequence))
+		client.tick(4)
+		sleep(1)
+	if(length(executor.request_commands) || length(executor.control_commands) || length(executor.inflight_commands) || length(client.inflight_frames) || client.pending_frame || client.sent_output_ack != client.ack_output_sequence || !client.monitoring_negotiated)
+		world.log << "EXTERNAL_FAIL telemetry_idle_barrier"
+		client.close()
+		shutdown()
+		return
+	var/previous_sample = client.monitor_sample_sequence
+	var/idle_input = client.sent_input_sequence
+	var/idle_applied = client.last_applied_sequence
+	var/idle_ack = client.ack_output_sequence
+	deadline = world.time + 100
+	while(world.time < deadline && client.monitor_sample_sequence == previous_sample && client.state != "resync_required")
+		client.tick(4)
+		sleep(1)
+	if(client.monitor_sample_sequence == previous_sample || client.sent_input_sequence != idle_input || client.last_applied_sequence != idle_applied || client.ack_output_sequence != idle_ack || client.host_metrics["sync_state"] != "ready" || client.host_metrics["node_count"] != 1 || client.host_metrics["service_count"] != 1 || !client.host_metrics["managed_bytes"])
+		world.log << "EXTERNAL_FAIL telemetry_heartbeat [client.last_error || client.state]"
+		client.close()
+		shutdown()
+		return
+	world.log << "EXTERNAL_PASS monitor_heartbeat_without_application_progress"
 	// Неизвестный effect нельзя считать обработанным и включать в cumulative output ACK.
 	var/previous_ack = client.ack_output_sequence
-	var/output = netrun_external_json_object(list("kind" = json_encode("output"), "world_epoch" = json_encode(client.world_epoch), "engine_epoch" = json_encode(client.engine_epoch), "binding_epoch" = json_encode(client.binding_epoch), "output_sequence" = json_encode(netrun_external_decimal_next(previous_ack)), "applied_sequence" = json_encode(client.input_sequence), "results" = "\[{\"kind\":\"service_invocation\"}\]"))
-	if(client.process_frame(output) || client.ack_output_sequence != previous_ack)
+	var/output = netrun_external_json_object(list("kind" = json_encode("output"), "world_epoch" = json_encode(client.world_epoch), "engine_epoch" = json_encode(client.engine_epoch), "binding_epoch" = json_encode(client.binding_epoch), "output_sequence" = json_encode(netrun_external_decimal_next(previous_ack)), "applied_sequence" = json_encode(client.last_applied_sequence), "results" = "\[{\"kind\":\"service_invocation\",\"binding_epoch\":[json_encode(client.binding_epoch)]}\]"))
+	if(client.process_frame(output) || client.ack_output_sequence != previous_ack || client.last_error != "unsupported_output")
 		world.log << "EXTERNAL_FAIL unsafe_ack"
 		shutdown()
 		return

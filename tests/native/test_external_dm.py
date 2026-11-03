@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from tool_paths import find_dotnet
+from external_fixture import prepare_external_wrapper
 import secrets
 import shutil
 import socket
@@ -66,7 +67,8 @@ def run(arguments: argparse.Namespace) -> None:
     source = Path(arguments.source).resolve()
     integration = source / "modular_bluemoon/code/modules/netrun/integration"
     included = [ROOT / "tests/native/external_harness.dm",
-                integration / "external_core.dm", integration / "external_effects.dm"]
+                integration / "external_core.dm", integration / "external_effects.dm",
+                source / "modular_bluemoon/code/modules/netrun/core/library_monitor.dm"]
     library = Path(arguments.library).resolve()
     rust_g = source / "rust_g.dll"
     for required in [*included, library, rust_g]:
@@ -90,8 +92,7 @@ def run(arguments: argparse.Namespace) -> None:
         temporary = Path(folder)
         token_file = temporary / "session-token.txt"
         token_file.write_text(token, encoding="ascii")
-        wrapper = temporary / "external.dme"
-        wrapper.write_text("".join(f'#include "{path.as_posix()}"\n' for path in included), encoding="utf-8")
+        wrapper = prepare_external_wrapper(source, temporary)
         built = checked_run([str(compiler), str(wrapper)], temporary, 30)
         if "0 errors, 0 warnings" not in built:
             raise RuntimeError(f"tiny_world_compile_not_clean\n{built}")
@@ -118,7 +119,7 @@ def run(arguments: argparse.Namespace) -> None:
                 output, _ = world.communicate(timeout=arguments.timeout)
                 if world.returncode or "EXTERNAL_PASS snapshot_churn_and_ack machine_lifecycle" not in output or "EXTERNAL_FAIL" in output:
                     raise RuntimeError(f"external_lifecycle_failed\n{output.replace(token, '<redacted>')}")
-                print("PASS: BYOND516 -> bridge -> Host snapshot/catchup/churn -> native message lifecycle -> safe output ACK")
+                print("PASS: BYOND516 -> bridge -> Host snapshot/catchup/churn -> native message lifecycle -> real idle telemetry -> safe output ACK")
             finally:
                 stop_process(world)
                 stop_process(host)

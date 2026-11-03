@@ -80,6 +80,21 @@ internal static class RuntimeFingerprint
                     if (request.Frequency is { } frequency) writer.Write(frequency);
                     writer.Write(request.MaxResults);
                     break;
+                case WatchServices watch when ServiceWatchBroker.IsValidRequest(watch.Request):
+                    writer.Write((byte)16);
+                    writer.Write(watch.Request.Key.ProducerId);
+                    writer.Write(watch.Request.Key.Sequence);
+                    writer.Write(watch.Request.Source.ServiceId);
+                    writer.Write(watch.Request.Source.Generation);
+                    writer.Write(watch.Request.Family);
+                    writer.Write(watch.Request.Tag is not null);
+                    if (watch.Request.Tag is { } watchedTag) writer.Write(watchedTag);
+                    break;
+                case UnwatchServices unwatch when TransportFingerprint.ValidKey(unwatch.Key):
+                    writer.Write((byte)17);
+                    writer.Write(unwatch.Key.ProducerId);
+                    writer.Write(unwatch.Key.Sequence);
+                    break;
                 case CancelDiscovery cancel when TransportFingerprint.ValidKey(cancel.Key):
                     writer.Write((byte)8);
                     writer.Write(cancel.Key.ProducerId);

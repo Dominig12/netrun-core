@@ -138,6 +138,16 @@ internal static class RuntimeOutputJson
                     writer.WritePropertyName("payload");
                     NetworkValueJson.Write(writer, completed.Payload ?? NetworkValue.Null);
                     break;
+                case ServiceWatchEvent changed:
+                    writer.WriteString("kind", "service_watch_event");
+                    writer.WriteString("change", changed.Change);
+                    writer.WriteString("family", changed.Family);
+                    writer.WriteString("tag", changed.Tag);
+                    writer.WritePropertyName("service");
+                    if (changed.Service is { } observed) WriteService(writer, observed); else writer.WriteNullValue();
+                    writer.WriteBoolean("online", changed.Online);
+                    Counter(writer, "directory_revision", changed.DirectoryRevision);
+                    break;
                 case DiscoveryPage page:
                     writer.WriteString("kind", "discovery_page");
                     writer.WriteStartArray("candidates");

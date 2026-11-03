@@ -61,6 +61,7 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
             writer.WriteNumber("sector_count", _runtime.Sectors.Count);
             writer.WriteNumber("active_requests", _runtime.ActiveRequestCount);
             writer.WriteNumber("active_discovery", _runtime.ActiveDiscoveryCount);
+            writer.WriteNumber("active_service_watches", _runtime.ActiveServiceWatchCount);
             writer.WriteNumber("active_projections", _runtime.ActiveProjectionCount);
             writer.WriteNumber("pending_events", _runtime.EventCount);
             writer.WriteNumber("input_unacked", _inputReplies.Count);

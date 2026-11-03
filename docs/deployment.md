@@ -163,3 +163,38 @@ python tests/native/test_bridge_linux.py --library native/bin/libnetrun_bridge-x
 
 Это development toolchain. Сборку ELF, его runtime-проверку и полный запуск станции
 учитывают отдельно; результаты и ограничения приведены в [verification.md](verification.md).
+
+
+## Bounded concurrent sector topology and streaming backpressure
+
+The topology builder builds each sector's spatial KD-tree independently and
+connects APCs within independent sectors on up to four managed worker threads
+(default `TopologyOptions.MaxParallelism = 4`; set to `1` to disable).
+This is *parallel computation inside one Build*, not concurrent mutation of
+`NetworkRuntime`: a single owner still publishes the final graph, and all
+sector results are merged deterministically in their original order.
+Small topologies remain on the serial path to avoid thread-pool overhead.
+All service dispatch, invocation identity, and application ACK behavior is unchanged.
+
+The deployed `Netrun.Host serve` executable now bounds both socket channels
+to **64 frames** by default. When the DM peer is slower than the Host, a full
+socket channel naturally propagates TCP backpressure instead of accumulating
+unbounded `byte[]` frames. The default does not introduce application-level
+input/output ACK credit or alter the previously negotiated protocol.
+
+Environment variables for `serve` (positive integer 1..65536, or `0` to
+disable) are:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `NETRUN_HOST_QUEUE_CAPACITY` | 64 | Capacity of each of the two socket channels |
+| `NETRUN_HOST_INPUT_WINDOW` | 0 | Optional cumulative input ACK credit |
+| `NETRUN_HOST_OUTPUT_WINDOW` | 0 | Optional unACKed output credit |
+| `NETRUN_HOST_EVENTS_PER_OUTPUT` | 0 | Optional events per output frame |
+| `NETRUN_HOST_GRAPH_PAGE_WINDOW` | 0 | Optional graph application page credit |
+
+**Only enable finite application windows after validating the corresponding
+DM credit/retry handling.** Bounded socket queues are independent and safe by
+default. These changes do not yet make the single-owner domain runtime or
+service handlers run concurrently; future immutable-snapshot read workers
+must commit through the ordered owner and discard stale revisions.

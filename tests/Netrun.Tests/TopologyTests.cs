@@ -313,3 +313,55 @@ public sealed class TopologyTests
         }
     }
 }
+
+/// <summary>Parallel sector workspace must retain deterministic physical graph order.</summary>
+public sealed class ParallelTopologyTests
+{
+    [Fact]
+    public void ParallelSectorBuildPreservesCanonicalGraph()
+    {
+        var sectors = new Dictionary<string, SectorFact>(StringComparer.Ordinal);
+        var nodes = new Dictionary<string, NodeFact>(StringComparer.Ordinal);
+        for (var sectorIndex = 0; sectorIndex < 6; sectorIndex++)
+        {
+            var sector = "sector-" + sectorIndex;
+            sectors[sector] = new(sector, 1, 1, new ValueList<int>([sectorIndex + 1]));
+            for (var index = 0; index < 40; index++)
+            {
+                var id = "apc-" + sectorIndex + "-" + index;
+                var address = "A" + sectorIndex.ToString("D2") + index.ToString("D3");
+                var state = new NodeState(address, "apc",
+                    new Position(2 + (index % 8) * 12, 2 + (index / 8) * 12, sectorIndex + 1),
+                    sector, true, new NodeNetworkFacts("home", "home"));
+                nodes[id] = new NodeFact(id, 1, 1, state);
+            }
+            for (var index = 0; index < 200; index++)
+            {
+                var id = "leaf-" + sectorIndex + "-" + index;
+                var state = new NodeState("L" + sectorIndex.ToString("D2") + index.ToString("D4"),
+                    "server", new Position(3 + (index % 8) * 12, 3 + (index % 5) * 12, sectorIndex + 1),
+                    sector, true, new NodeNetworkFacts("home", "home"));
+                nodes[id] = new NodeFact(id, 1, 1, state);
+            }
+        }
+        var serial = new NetworkTopology(new(MaxParallelism: 1)).Build(nodes, sectors, 1);
+        var parallel = new NetworkTopology(new(MaxParallelism: 4)).Build(nodes, sectors, 1);
+        Assert.Equal(serial.PhysicalEdges, parallel.PhysicalEdges);
+        Assert.Equal(serial.Bindings.OrderBy(entry => entry.Key.NodeId),
+            parallel.Bindings.OrderBy(entry => entry.Key.NodeId));
+        Assert.Equal(serial.LanIds.OrderBy(entry => entry.Key.NodeId),
+            parallel.LanIds.OrderBy(entry => entry.Key.NodeId));
+        Assert.Equal(serial.RelayBucket, parallel.RelayBucket);
+        foreach (var key in serial.Nodes.Keys)
+            Assert.Equal(serial.Adjacency[key], parallel.Adjacency[key]);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(33)]
+    public void InvalidParallelismIsRejected(int parallelism)
+    {
+        Assert.Throws<TopologyException>(() => new NetworkTopology(new(MaxParallelism: parallelism)));
+    }
+}

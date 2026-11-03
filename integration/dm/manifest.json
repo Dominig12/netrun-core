@@ -3,48 +3,120 @@
     "base_revision":  "5035c8ecab3a9d3a739c8152fd772f5543084169",
     "files":  [
                   {
+                      "path":  "code/datums/innate_features.dm",
+                      "sha256":  "6c1c6aff54378227a8b578bc433e56ee475ecbf0afc6935752dc6439f5e74476"
+                  },
+                  {
+                      "path":  "code/modules/surgery/bodyparts/naga_tail.dm",
+                      "sha256":  "66a919717ae2ef42254b3e733bf0ab86b60906b4497ff9f0b7682936d8e2a517"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/bodypart_leg_layers.dm",
+                      "sha256":  "c2d882bde978e82b957e5c397690d1a8cd7d37acde5e684f90c5e791388f00ff"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/bugreports_2026_11.dm",
+                      "sha256":  "7f4567c22fdc2261cc32107790b6c708fb86109c012d8077deffc9f143eda31c"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/flamethrower_fuel.dm",
+                      "sha256":  "5a8d53b60a43c10423b778781bd779d547415328aa24dd04d23c189630b5afec"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/inducer_magazine.dm",
+                      "sha256":  "479d09c606d5aa33f0c89db5b287c126e8a12b862a21dc8642f3bd799c2b1d2b"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/lewd_summon.dm",
+                      "sha256":  "3e0ac275210ff061903694db972d07abe4835a14dd722056188f0627ed396324"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/multiz_station_transparent_space.dm",
+                      "sha256":  "45b2890309c79045f183ba930f6e28a8d18e4de87bda1905b9ec6b02e8c63e74"
+                  },
+                  {
                       "path":  "code/modules/unit_tests/netrun_core_live.dm",
-                      "sha256":  "e5b113aed6495a1d26d3fa182504ee4bc96a55f3101fccf1e415d611adb3bf7d"
+                      "sha256":  "718edd688eef1b7fa0b7fef8375aabd7acf8607f8efc35340f055130549b4507"
                   },
                   {
                       "path":  "code/modules/unit_tests/netrun_core_recovery.dm",
-                      "sha256":  "0f7aecc10866ace2d441029d720346f8b0231c20f5c876d61f822637dddb0e7f"
+                      "sha256":  "200ebb0183fc41853a4f10483b313efc1229f097ac0206f05e9852181979f306"
                   },
                   {
                       "path":  "code/modules/unit_tests/netrun_external_core.dm",
-                      "sha256":  "75848d261c6dcc615890b5cbf9c4b3fe2b32350b19185f3ba5dc99c800614000"
+                      "sha256":  "8903f196458f9d1eca7c56be8da8eadf0268a4128a53d94c90749e4c1a46522d"
                   },
                   {
                       "path":  "code/modules/unit_tests/netrun_external_projection.dm",
-                      "sha256":  "dbbcc1e043a4fee4e7d7cf60a10ebd03bf912ed2e05acf5d083832e139e431e1"
+                      "sha256":  "6bbfccad295a98ab55608d5351421b265fc035794a1335ff1dfb56f5cf235539"
                   },
                   {
                       "path":  "code/modules/unit_tests/netrun_external_queries.dm",
-                      "sha256":  "0ccde181f936827f31f0ad6fae0d9ec78ba52150d0bfc53d34a7e03a08e6cef0"
+                      "sha256":  "45a499128d444316d202839ed1094e258d81e4596aa46befa32a99bdf0098b8e"
                   },
                   {
                       "path":  "code/modules/unit_tests/netrun_fixture_bus.dm",
-                      "sha256":  "87f85b9ce1f631c49586ec939d2811fcf5e58b4142ea765d7b47a9daa8cae5db"
+                      "sha256":  "9ed81248124c17708a0a706193f1e044d0132e10cb617ba49590c7d224f9856f"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/pull_layer_ordering.dm",
+                      "sha256":  "7e144e33c8557db9b3ffda5fc52eff6e0f27ff123f18454007f94eb53081d61f"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/resize_health_hud.dm",
+                      "sha256":  "395094a1640d0e6a7343035d06d11777eed49071714d62c2957959f7be74e84b"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/supporting_tail.dm",
+                      "sha256":  "73d0a946f97a8fbd78a9c29a93fa22ea08fd39d5fe901ae7793ee189b2f00851"
+                  },
+                  {
+                      "path":  "code/modules/unit_tests/vanguard_mission_remains.dm",
+                      "sha256":  "d882ce6fb1081300a4f727243175b34b2454c3fbc93d2a9d0cf01745d6c25773"
+                  },
+                  {
+                      "path":  "docs/innate_features.md",
+                      "sha256":  "f6de0a4445bc48c15580ad72a83c55b35208221e3585b1e0126ebc9d6ac7b406"
+                  },
+                  {
+                      "path":  "html/changelogs/archive/2026-11.yml",
+                      "sha256":  "ba75382a661bfef027c9f89a2ae072630e8f4968c3aa1cf4727154adc5c22ca2"
+                  },
+                  {
+                      "path":  "modular_bluemoon/code/modules/netrun/ASYNC_EXTERNAL.md",
+                      "sha256":  "5fb25290ebd821b6f64557ff3ae581dba6decfc13df6b469f1228297fd7aca5c"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_core.dm",
-                      "sha256":  "4884aee32c0a1135ae131a5e9fcb0fbc485078f29f30b278986ae12e0951df60"
+                      "sha256":  "10186b644637dae8eac54ddef05c2d686cd4428999d61cfbcd9f4b52819cc5bd"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_effects.dm",
-                      "sha256":  "24315bab54499e3af83f59da6e576b33b6d54b7a5feb7168985ce7a26931648d"
+                      "sha256":  "951dd639da816aaffa28cfe5f294a0b29bca835fa1569201b6fb1f547e5550e7"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_projection.dm",
-                      "sha256":  "f25dc82e122ac0b8f53cd3d700fbf972d3825a57c10924995c40396c4baf2dd8"
+                      "sha256":  "14d6fa98aae1f5e80cbb43b58fe9591ba7df8d2b7c88b44dade311f5da71b01f"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_queries.dm",
-                      "sha256":  "15a63e6222c6c34a28e2164ef1197c6b53749c5212c4539f1daf5124eeba3023"
+                      "sha256":  "b36c1ad5ddc61d8568408fd59144c75ba28345e136dd7fb8443bdc2d803896a8"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_service_discovery.dm",
-                      "sha256":  "121e76055c532fca7e70533ad0d6e04529793d443292893a3fb15ecd02ade417"
+                      "sha256":  "96b12b7e7a061ffcab57637b5bc6e1f215d6f14e866b45ccac827a326ec6e458"
+                  },
+                  {
+                      "path":  "tgui/packages/tgui/interfaces/CharacterSetup/tabs/Innate.test.tsx",
+                      "sha256":  "b925c925cfa9effe4a06d2b67e8c4cd6440a6f9c6d4cbd86839dccf78f111795"
+                  },
+                  {
+                      "path":  "tgui/packages/tgui/interfaces/CharacterSetup/tabs/Innate.tsx",
+                      "sha256":  "79b9ff36001fd3121da3fd20beac3ab485a831839539d75cce8e20bad48696ac"
+                  },
+                  {
+                      "path":  "tgui/packages/tgui/interfaces/HealthanalyzerInnate.test.tsx",
+                      "sha256":  "0b6ee7b8f40319c12963c9b41ff0ce0f16a2f8cefe10d72e6521e9e10d392e68"
                   },
                   {
                       "path":  "tgui/packages/tgui/interfaces/NetrunTerminal/LiveCoreMap.test.tsx",
@@ -52,7 +124,7 @@
                   },
                   {
                       "path":  "tools/netrun/EXTERNAL_CORE.md",
-                      "sha256":  "e6f7e68929e1a50c7c10a29b6edc657330823c5396babd05525f51565af394d7"
+                      "sha256":  "5170bcd03d46ab24e62fada7ba95cd603f7522178188e824fa0e86c7cefa552e"
                   },
                   {
                       "path":  "tools/netrun/build-core-container.sh",
@@ -72,7 +144,7 @@
                   },
                   {
                       "path":  "tools/netrun/core-source.json",
-                      "sha256":  "7a7b717cd06c77b3117979f66f0aa244982fc4a1b269c18f8412e015ade75b8f"
+                      "sha256":  "f2fedeb1924019ffb01618f09a45fdc716c2c7cb3886b955adfe366ee024c8b2"
                   },
                   {
                       "path":  "tools/netrun/core-source.mjs",
@@ -81,6 +153,14 @@
                   {
                       "path":  "tools/netrun/core-source.test.mjs",
                       "sha256":  "a1a3f634774a95784c1b07e7f9a763f5fbaf15cc696c928edb72e136d001971c"
+                  },
+                  {
+                      "path":  "tools/netrun/debug-host.mjs",
+                      "sha256":  "78f52368fbbc3a5d3b42c32ca870122b8be685058359f3492dd86bd0491bfec0"
+                  },
+                  {
+                      "path":  "tools/netrun/debug-host.test.mjs",
+                      "sha256":  "f3a08d960cb7892cf1eb91e6bc80b15fa86c7baa1f0f2b1b812f477a3dc10d13"
                   },
                   {
                       "path":  "tools/netrun/docker-lifecycle.mjs",
@@ -121,8 +201,24 @@
                   {
                       "path":  "tools/netrun/run-live-core-test.test.mjs",
                       "sha256":  "b0509cabbbb5194c13b02c4aea7fcd91007568e2d44fda99a76b2df752a76ec2"
+                  },
+                  {
+                      "path":  "tools/netrun/setup-vscode.mjs",
+                      "sha256":  "edf40d14d40a13c296d48376e2267929f139013e9d11cbd53af2a36fe26b6767"
+                  },
+                  {
+                      "path":  "tools/netrun/setup-vscode.test.mjs",
+                      "sha256":  "8bcee13b4be1dda600af159b563174f6972f1e71fc4bb2cda2ccdc0bead894de"
+                  },
+                  {
+                      "path":  "tools/netrun/vscode-launch.json",
+                      "sha256":  "4d7a05650b85c8a466f6f7cfde26a3493e4f21b1c8b9633e70838b995894f698"
+                  },
+                  {
+                      "path":  "tools/netrun/vscode-tasks.json",
+                      "sha256":  "5eb5372449e4ca92085b82cc078a6594f6dc1612a3a7d2b42309810c51c0ca01"
                   }
               ],
-    "patch_sha256":  "a9dde28ae396b334e5c128a2741b8dcb4a895378985c95bc19df40a8caf30db8",
-    "source_revision":  "cd6f723bdbb2b1feeb777e2f1e78c267c01f6fea"
+    "patch_sha256":  "78d373dffb1f1c0aebdf7359c3ddc89a5ad81df9be011270409ddd9a4664e06c",
+    "source_revision":  "b91725c567dcdd4379d45ef7cd701ab7e270b515"
 }

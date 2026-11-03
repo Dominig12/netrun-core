@@ -5,6 +5,9 @@
 Добавлены continuous duplex I/O, coalesced fact groups, cumulative GraphSync page
 ACK, producer admission fences и defaults без application work/queue quotas.
 Текущие C# проекты и тестовые исходники собираются в Release без предупреждений.
+Windows x86 bridge собран; DM test artifact — 0 errors/0 warnings, DreamChecker —
+0 diagnostics. Четыре коротких Core regression tests прошли: unlimited input
+window, coalesced fact publication, dependent-command barrier и cumulative credit ACK.
 Новые долгие Windows/Docker и нагрузочные прогоны отложены по запросу пользователя;
 результаты прежних запусков ниже относятся к архитектуре до этих изменений.
 Сценарии regressions добавлены в исходники для последующего запуска.

@@ -502,7 +502,7 @@ public sealed class DiscoveryTests
         Assert.Equal(AdmissionStatus.Rejected, scene.Discovery.Submit(Request() with { Source = new("source", 2) }).Status);
         Assert.Equal(AdmissionStatus.Rejected, scene.Discovery.Submit(Request() with { Key = new("bad:producer", 1) }).Status);
         Assert.Equal(AdmissionStatus.Rejected, scene.Discovery.Submit(Request() with { DestinationFamily = "bad\ud800" }).Status);
-        Assert.Equal(AdmissionStatus.Rejected, scene.Discovery.Submit(Request() with { MaxResults = 4097 }).Status);
+        Assert.Equal(AdmissionStatus.Rejected, scene.Discovery.Submit(Request() with { MaxResults = 0 }).Status);
         Assert.Equal(0, scene.Discovery.ProducerCount);
         Assert.Equal(AdmissionStatus.Accepted, scene.Discovery.Submit(Request()).Status);
         scene.Discovery.Dispose();

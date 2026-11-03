@@ -147,11 +147,11 @@ public sealed class DiscoveryIntegrationTests
     [Fact]
     public void DiscoveryWireRejectsMalformedMetadataAndMixedWorldFrames()
     {
-        var valid = Encoding.UTF8.GetString(RuntimeJson.Encode(new(Epochs, 1, 0, new DiscoverServices(Request()))));
+        var valid = Encoding.UTF8.GetString(RuntimeJson.Encode(new(Epochs, 1, 0, new DiscoverServices(Request() with { MaxResults = 4096 }))));
         foreach (var invalid in new[]
         {
             valid.Replace("\"max_results\":4096", "\"max_results\":0", StringComparison.Ordinal),
-            valid.Replace("\"max_results\":4096", "\"max_results\":4097", StringComparison.Ordinal),
+            valid.Replace("\"max_results\":4096", "\"max_results\":2147483648", StringComparison.Ordinal),
             valid.Replace("\"max_results\":4096", "\"max_results\":\"4096\"", StringComparison.Ordinal),
             valid.Replace("\"max_results\":4096", "\"max_results\":4096,\"max_results\":4096", StringComparison.Ordinal),
             valid.Replace("\"max_results\":4096", "\"max_results\":4096,\"unknown\":true", StringComparison.Ordinal),

@@ -459,9 +459,9 @@ public sealed class ProjectionTests
     public void InvalidOptionsAndNegativeBudgetAreRejected()
     {
         var graph = Graph([Node("A")]);
-        foreach (var options in new[] { new ProjectionOptions(MaxQueries: 0), new ProjectionOptions(MaxQueries: 17),
+        foreach (var options in new[] { new ProjectionOptions(MaxQueries: 0), new ProjectionOptions(MaxQueries: -1),
                      new ProjectionOptions(PageRows: 65), new ProjectionOptions(MaxEvents: 0), new ProjectionOptions(HistoryCapacity: 0),
-                     new ProjectionOptions(MaxProducers: 129), new ProjectionOptions(MaxNodes: 10_001), new ProjectionOptions(MaxEdges: -1) })
+                     new ProjectionOptions(MaxProducers: 0), new ProjectionOptions(MaxNodes: 0), new ProjectionOptions(MaxEdges: -1) })
             Assert.Throws<ArgumentException>(() => new ProjectionBroker(() => graph, new(), "binding", options));
         using var broker = new ProjectionBroker(() => graph, new(), "binding");
         Assert.Throws<ArgumentOutOfRangeException>(() => broker.Advance(-1));

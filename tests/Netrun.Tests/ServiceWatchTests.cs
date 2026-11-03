@@ -108,6 +108,43 @@ public sealed class ServiceWatchTests
     }
 
     [Fact]
+    public void RemovingSourceEmitsTerminalEventEvenWithoutOtherCatalogChanges()
+    {
+        var world = Fixture();
+        var directory = new ServiceDirectory();
+        foreach (var service in world.Services.Values) directory.Upsert(service);
+        using var broker = new ServiceWatchBroker(world, directory, "binding");
+        var request = new ServiceWatchRequest(new("watch", 1), new("source", 1), "test.target");
+        Assert.Equal(AdmissionStatus.Accepted, broker.Subscribe(request).Status);
+        var oldSource = world.ServiceMap["source"];
+        world.ServiceMap.Remove(oldSource.ServiceId);
+        directory.Remove(new(oldSource.ServiceId, oldSource.Generation));
+        broker.Observe(oldSource, null);
+        Assert.True(broker.TryDequeueEvent(out var notice));
+        Assert.Equal("source_unavailable", notice!.Change);
+        Assert.Equal(0, broker.ActiveCount);
+        Assert.False(broker.TryDequeueEvent(out _));
+    }
+
+    [Fact]
+    public void OwnerGoingOfflineRevokesSubscriptionWithoutWaitingForServiceMutation()
+    {
+        var world = Fixture();
+        var directory = new ServiceDirectory();
+        foreach (var service in world.Services.Values) directory.Upsert(service);
+        using var broker = new ServiceWatchBroker(world, directory, "binding");
+        var request = new ServiceWatchRequest(new("watch", 1), new("source", 1), "test.target");
+        Assert.Equal(AdmissionStatus.Accepted, broker.Subscribe(request).Status);
+        var before = world.NodeMap["source-node"];
+        var offline = before with { Revision = before.Revision + 1, State = before.State with { Online = false } };
+        world.NodeMap["source-node"] = offline;
+        broker.ObserveNode(before, offline);
+        Assert.True(broker.TryDequeueEvent(out var notice));
+        Assert.Equal("source_unavailable", notice!.Change);
+        Assert.Equal(0, broker.ActiveCount);
+    }
+
+    [Fact]
     public void WatchCommandsRoundTripThroughStrictWireCodec()
     {
         var epoch = new Epochs("world", "engine", "binding");

@@ -559,6 +559,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             if (before == after)
                 continue;
             _authority.ObserveNodeChange(before, after);
+            _serviceWatches?.ObserveNode(before, after);
             if (after is null)
             {
                 if (before is not null)

@@ -26,6 +26,7 @@ public sealed class ServiceWatchBroker : IDisposable
         internal required string SourceFamily;
         internal required string? SourceTag;
         internal bool Overflowed;
+        internal bool SourceRevoked;
     }
 
     private readonly record struct Notification(RequestKey WatchId, ServiceWatchEvent Event);
@@ -35,6 +36,10 @@ public sealed class ServiceWatchBroker : IDisposable
     private readonly ServiceWatchOptions _options;
     private readonly Dictionary<RequestKey, Watch> _active = [];
     private readonly Dictionary<string, HashSet<RequestKey>> _byFamily = new(StringComparer.Ordinal);
+    /// <summary>Revokes watched source generations on fact removal without a full watch scan.</summary>
+    private readonly Dictionary<ServiceKey, HashSet<RequestKey>> _bySource = [];
+    private readonly Dictionary<NodeKey, HashSet<RequestKey>> _byOwner = [];
+    private readonly Queue<RequestKey> _revokedSources = [];
     private readonly Queue<Notification> _events = [];
     private readonly Queue<RequestKey> _overflow = [];
     private readonly Dictionary<RequestKey, ServiceWatchRequest> _history = [];
@@ -43,7 +48,7 @@ public sealed class ServiceWatchBroker : IDisposable
     private bool _disposed;
 
     public int ActiveCount => _active.Count;
-    public int EventCount => _events.Count + _overflow.Count;
+    public int EventCount => _events.Count + _overflow.Count + _revokedSources.Count;
 
     public ServiceWatchBroker(INetworkWorldView world, ServiceDirectory directory, string bindingEpoch,
         ServiceWatchOptions? options = null)
@@ -103,6 +108,12 @@ public sealed class ServiceWatchBroker : IDisposable
         if (!_byFamily.TryGetValue(request.Family, out var watchers))
             _byFamily.Add(request.Family, watchers = []);
         watchers.Add(request.Key);
+        if (!_bySource.TryGetValue(request.Source, out var sources))
+            _bySource.Add(request.Source, sources = []);
+        sources.Add(request.Key);
+        if (!_byOwner.TryGetValue(watch.Owner, out var owners))
+            _byOwner.Add(watch.Owner, owners = []);
+        owners.Add(request.Key);
         _watermarks[request.Key.ProducerId] = request.Key.Sequence;
         foreach (var key in snapshot.Keys)
         {
@@ -124,6 +135,16 @@ public sealed class ServiceWatchBroker : IDisposable
                 watchers.Remove(key);
                 if (watchers.Count == 0) _byFamily.Remove(watch.Request.Family);
             }
+            if (_bySource.TryGetValue(watch.Request.Source, out var sources))
+            {
+                sources.Remove(key);
+                if (sources.Count == 0) _bySource.Remove(watch.Request.Source);
+            }
+            if (_byOwner.TryGetValue(watch.Owner, out var owners))
+            {
+                owners.Remove(key);
+                if (owners.Count == 0) _byOwner.Remove(watch.Owner);
+            }
             _history[key] = watch.Request;
             _historyOrder.Enqueue(key);
             if (_historyOrder.Count > _options.HistoryCapacity)
@@ -138,6 +159,19 @@ public sealed class ServiceWatchBroker : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (before == after) return;
+        if (before is not null && (after is null || !after.Online || before.Generation != after.Generation ||
+            before.Owner != after.Owner || before.Family != after.Family || before.Tag != after.Tag))
+        {
+            var sourceKey = new ServiceKey(before.ServiceId, before.Generation);
+            if (_bySource.TryGetValue(sourceKey, out var sourceWatches))
+            {
+                foreach (var key in sourceWatches)
+                {
+                    var watch = _active[key];
+                    RevokeSource(_active[key]);
+                }
+            }
+        }
         if (before is not null && (after is null || before.Generation != after.Generation ||
             before.Family != after.Family || before.Tag != after.Tag))
             Notify(before, "removed");
@@ -146,9 +180,36 @@ public sealed class ServiceWatchBroker : IDisposable
                 before.Family != after.Family || before.Tag != after.Tag ? "added" : "updated");
     }
 
+    /// <summary>Native owner availability is part of the watch source identity.</summary>
+    public void ObserveNode(NodeFact? before, NodeFact? after)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (before is null || before == after ||
+            after is not null && after.Generation == before.Generation && after.State.Online)
+            return;
+        var owner = new NodeKey(before.NodeId, before.Generation);
+        if (_byOwner.TryGetValue(owner, out var watches))
+            foreach (var key in watches)
+                RevokeSource(_active[key]);
+    }
+
+    private void RevokeSource(Watch watch)
+    {
+        if (watch.SourceRevoked) return;
+        watch.SourceRevoked = true;
+        _revokedSources.Enqueue(watch.Request.Key);
+    }
+
     public bool TryDequeueEvent(out ServiceWatchEvent? result)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        while (_revokedSources.TryDequeue(out var sourceKey))
+        {
+            if (!_active.TryGetValue(sourceKey, out var watch) || !watch.SourceRevoked) continue;
+            result = Event(watch, "source_unavailable", null);
+            Unsubscribe(sourceKey);
+            return true;
+        }
         while (_overflow.TryDequeue(out var key))
         {
             if (!_active.TryGetValue(key, out var watch) || !watch.Overflowed) continue;
@@ -158,7 +219,7 @@ public sealed class ServiceWatchBroker : IDisposable
         }
         while (_events.TryDequeue(out var notification))
         {
-            if (!_active.TryGetValue(notification.WatchId, out var watch) || watch.Overflowed)
+            if (!_active.TryGetValue(notification.WatchId, out var watch) || watch.Overflowed || watch.SourceRevoked)
                 continue;
             if (!SourceCurrent(watch))
             {
@@ -211,7 +272,7 @@ public sealed class ServiceWatchBroker : IDisposable
 
     private void Queue(Watch watch, string change, ServiceFact? service)
     {
-        if (watch.Overflowed) return;
+        if (watch.Overflowed || watch.SourceRevoked) return;
         if (_events.Count >= _options.MaxEvents)
         {
             watch.Overflowed = true;
@@ -227,6 +288,9 @@ public sealed class ServiceWatchBroker : IDisposable
         _disposed = true;
         _active.Clear();
         _byFamily.Clear();
+        _bySource.Clear();
+        _byOwner.Clear();
+        _revokedSources.Clear();
         _events.Clear();
         _overflow.Clear();
         _history.Clear();

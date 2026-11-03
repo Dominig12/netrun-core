@@ -4,7 +4,13 @@
     var/list/settings = world.params
     var/library = settings["library"]
     var/port = settings["port"]
-    var/open_result = call_ext(library, "netrun_open")("127.0.0.1", port, "8", "1048576", "1048576")
+    var/list/noncanonical = json_decode(call_ext(library, "netrun_open")("127.0.0.1", port, "00", "0", "1048576"))
+    if(noncanonical["code"] != "invalid_arguments")
+        world.log << "NATIVE_FAIL noncanonical_zero"
+        shutdown()
+        return
+    // Production default использует две нулевые квоты; x86 ABI должен принять их так же, как x64.
+    var/open_result = call_ext(library, "netrun_open")("127.0.0.1", port, "0", "0", "1048576")
     var/list/open_status = json_decode(open_result)
     if(open_status["code"] != "accepted")
         world.log << "NATIVE_FAIL open"

@@ -110,9 +110,9 @@ class BridgeTests(unittest.TestCase):
             time.sleep(0.005)
         self.fail("timed out waiting for native bridge")
 
-    def open(self, server, frames=8, frame_bytes=1048576):
+    def open(self, server, frames=8, frame_bytes=1048576, queue_bytes=1048576):
         """Открывает единственный worker и дожидается соединения вне вызова ABI."""
-        self.assertEqual("accepted", self.call("open", "127.0.0.1", str(server.port), str(frames), "1048576", str(frame_bytes))["code"])
+        self.assertEqual("accepted", self.call("open", "127.0.0.1", str(server.port), str(frames), str(queue_bytes), str(frame_bytes))["code"])
         self.wait(lambda: self.call("status")["state"] in ("connected", "disconnected"))
 
     def tearDown(self):
@@ -194,9 +194,53 @@ class BridgeTests(unittest.TestCase):
         """ABI не делает DNS и не принимает сломанные limits, UTF-8 или вызовы без аргументов."""
         self.assertEqual("invalid_arguments", self.call("open", "example.com", "1", "8", "1048576", "1048576")["code"])
         self.assertEqual("invalid_arguments", self.call("open", "127.0.0.1", "01", "8", "1048576", "1048576")["code"])
+        for invalid in ("00", "01", "+0", "-0", "18446744073709551616"):
+            with self.subTest(invalid=invalid):
+                self.assertEqual("invalid_arguments", self.call("open", "127.0.0.1", "1", invalid, "0", "1048576")["code"])
+                self.assertEqual("invalid_arguments", self.call("open", "127.0.0.1", "1", "0", invalid, "1048576")["code"])
+        self.assertEqual("invalid_arguments", self.call("open", "127.0.0.1", "0", "0", "0", "1048576")["code"])
+        self.assertEqual("invalid_arguments", self.call("open", "127.0.0.1", "1", "0", "0", "0")["code"])
+        self.assertEqual("invalid_arguments", self.call("poll", "0", "1048576")["code"])
         self.assertEqual("invalid_arguments", self.call("try_enqueue", b'\xff')["code"])
         self.assertEqual("invalid_arguments", self.call("try_enqueue")["code"])
         self.assertEqual("closed", self.call("try_enqueue", "{}")["code"])
+
+    def test_zero_quotas_accept_burst_beyond_finite_queue_defaults(self):
+        """Production open(0,0) не ждёт poll после 128 кадров или 1 MiB; framing ABI остаётся конечным."""
+        bodies = [f"{index:04d}".encode() + b"x" * 8188 for index in range(160)]
+        def action(client):
+            self.assertEqual(b"zero-quotas", read_frame(client))
+            client.sendall(b"".join(wire(body) for body in bodies))
+        server = Server(action)
+        self.open(server, frames=0, queue_bytes=0)
+        self.assertEqual("accepted", self.call("try_enqueue", "zero-quotas")["code"])
+        status = self.wait(lambda: (value if (value := self.call("status")).get("inbound_frames") == len(bodies) else None))
+        self.assertEqual(sum(map(len, bodies)), status["inbound_bytes"])
+        received = []
+        def poll():
+            received.extend(self.call("poll", "128", "8388608").get("frames", []))
+            return len(received) == len(bodies)
+        self.wait(poll)
+        self.assertEqual([body.decode() for body in bodies], received)
+        self.assertEqual(0, self.call("status")["inbound_bytes"])
+        server.finish()
+
+    def test_zero_queue_quota_can_be_combined_with_finite_other_quota(self):
+        """Count и byte quotas независимо принимают canonical zero, конечная соседняя настройка сохраняется."""
+        for frames, queue_bytes in ((0, 1048576), (8, 0)):
+            with self.subTest(frames=frames, queue_bytes=queue_bytes):
+                server = Server(lambda client: client.sendall(wire(read_frame(client))))
+                self.open(server, frames=frames, queue_bytes=queue_bytes)
+                self.assertEqual("accepted", self.call("try_enqueue", "mixed-quotas")["code"])
+                received = []
+                def poll():
+                    received.extend(self.call("poll", "8", "1048576").get("frames", []))
+                    return bool(received)
+                self.wait(poll)
+                self.assertEqual(["mixed-quotas"], received)
+                self.call("close")
+                self.wait(lambda: self.call("status")["state"] == "closed")
+                server.finish()
 
     def test_close_is_bounded_and_prevents_new_admission(self):
         """Close не ждёт peer и не позволяет создать второй worker поверх закрывающегося."""

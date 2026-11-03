@@ -204,8 +204,9 @@ bool argument(unsigned int argc, char** argv, unsigned int index, std::size_t li
     output.assign(argv[index], length);
     return true;
 }
-/// Читает canonical положительный ASCII integer без locale, знаков и переполнения.
+/// Читает canonical ASCII integer без locale, знаков и переполнения; ноль разрешён только при minimum=0.
 bool number(const std::string& value, std::size_t minimum, std::size_t maximum, std::size_t& output) {
+    if (value == "0" && minimum == 0) { output = 0; return true; }
     if (value.empty() || value[0] < '1' || value[0] > '9') return false;
     std::size_t parsed = 0;
     for (unsigned char c : value) {

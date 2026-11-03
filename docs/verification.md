@@ -7,7 +7,16 @@ Negotiated idle telemetry проверена настоящими loopback TCP �
 клиенты без opt-in не получают дополнительного трафика. Snapshot не меняет
 simulation time/runtime/replay, а active request count отражает ожидание native
 result и завершение. Все 35 Host/session tests прошли; Release build без
-предупреждений, whitespace verification и diff check прошли. Полный production
+предупреждений, whitespace verification и diff check прошли.
+
+Station monitor: 4/4 DM tests прошли в настоящем hermetic DreamDaemon после
+компиляции с 0 errors/0 warnings; проверены independent telemetry, causal counters,
+stale/rollover, explicit-null OS counters, CPU rate и bounded values-only history.
+DreamChecker — 0 diagnostics. Frontend: 4/4 Jest и targeted ESLint прошли.
+Общий TypeScript check остановился на существующем TS2345 в
+`HealthanalyzerInnate.test.tsx:69` (upstream test, не менялся); новые файлы ошибок
+типов не дали. Bundle из station `ca8b15667f` проверен по inventory, SHA-256/LF и
+изолированному применению hook patch к baseline. Полный production
 Windows/Docker прогон этой версии пока не выполнен.
 
 ## Изменения 2026-11-03

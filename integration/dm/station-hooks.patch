@@ -3669,6 +3669,18 @@ index 50e08d39c5..78485b657d 100644
  	if(Master)
  		Master.state_snapshot_frozen = TRUE
  	mc_state_mark_clean("world.Del")
+diff --git a/code/modules/admin/admin_verbs.dm b/code/modules/admin/admin_verbs.dm
+index ba8e0c165f..c0ef41fe8d 100644
+--- a/code/modules/admin/admin_verbs.dm
++++ b/code/modules/admin/admin_verbs.dm
+@@ -214,6 +214,7 @@ GLOBAL_PROTECT(admin_verbs_debug)
+ 	/client/proc/cmd_display_del_log,
+ 	/client/proc/cmd_display_gc_queue,
+ 	/client/proc/cmd_gc_health_panel,
++	/client/proc/show_netrun_library_monitor,
+ 	/client/proc/show_netrun_task_statistics,
+ 	/client/proc/create_outfits,
+ 	/client/proc/modify_goals,
 diff --git a/code/modules/antagonists/bloodsucker/powers/veil.dm b/code/modules/antagonists/bloodsucker/powers/veil.dm
 index 3664678d7e..0c9c9ce111 100644
 --- a/code/modules/antagonists/bloodsucker/powers/veil.dm
@@ -6409,7 +6421,7 @@ index 74fa108eae..32be36061f 100644
  	if(accept_hand)
  		if(!tool)
 diff --git a/code/modules/unit_tests/_unit_tests.dm b/code/modules/unit_tests/_unit_tests.dm
-index b05b0d9210..5bd01fcfe6 100644
+index b05b0d9210..25395f602a 100644
 --- a/code/modules/unit_tests/_unit_tests.dm
 +++ b/code/modules/unit_tests/_unit_tests.dm
 @@ -193,8 +193,10 @@
@@ -6455,7 +6467,7 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "multiz_ventcrawl.dm"
  #include "mod_suit_fixes.dm"
  #include "modular_map_loader.dm" //SPLURT EDIT
-@@ -448,6 +454,7 @@
+@@ -448,12 +454,14 @@
  #include "netrun_credential_sessions.dm"
  #include "netrun_refresh.dm"
  #include "netrun_routes.dm"
@@ -6463,7 +6475,14 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "netrun_transport.dm"
  #include "netrun_research_authority.dm"
  #include "netrun_availability_queue.dm"
-@@ -482,6 +489,11 @@
+ #include "netrun_routing_cache.dm"
+ #include "netrun_scheduler.dm"
+ #include "netrun_scheduler_reuse.dm"
++#include "netrun_library_monitor.dm"
+ #include "netrun_task_statistics.dm"
+ #include "netrun_execution.dm"
+ #include "netrun_interaction.dm"
+@@ -482,6 +490,11 @@
  #include "netrun_packets.dm"
  #include "netrun_contracts.dm"
  #include "netrun_invasions.dm"
@@ -6475,7 +6494,7 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "northstar.dm"
  #include "ntnet_responses.dm"
  // #include "ntnetwork_tests.dm"
-@@ -501,6 +513,7 @@
+@@ -501,6 +514,7 @@
  #include "process_memory.dm"
  #include "progressbar_deleted_target.dm"
  #include "projectiles.dm"
@@ -6483,7 +6502,7 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "qareen_chalk.dm"
  #include "radio_job_classes.dm"
  #include "weather.dm"
-@@ -519,6 +532,7 @@
+@@ -519,6 +533,7 @@
  #include "refactor_turfside.dm"
  #include "reinforced_plating.dm"
  #include "resist.dm"
@@ -6491,7 +6510,7 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "riot_shield_implant.dm"
  #include "round_10458_10462_runtimes.dm"
  #include "round_10463_10470_runtimes.dm"
-@@ -565,6 +579,7 @@
+@@ -565,6 +580,7 @@
  #include "strippable_hands_gate.dm"
  #include "subsystem_init.dm"
  #include "surgeries.dm"
@@ -6499,7 +6518,7 @@ index b05b0d9210..5bd01fcfe6 100644
  #include "synthcorrupt_emitter.dm"
  #include "tank_idle_sleep.dm"
  #include "teleporters.dm"
-@@ -579,6 +594,7 @@
+@@ -579,6 +595,7 @@
  #include "turf_reservation_flag.dm"
  #include "ui_numeric_exploits.dm"
  #include "unit_test.dm"
@@ -24916,7 +24935,7 @@ zk7KA_bR4SHA{fX@E(TevC2x0RPw`Kn{MbMl8m}MY`$Jygb*dTZ;8or0&Z;YbH|r&`
 V!0lb&e>$yj-pZ@WmB|?S{uie>s^$Oy
 
 diff --git a/tgstation.dme b/tgstation.dme
-index 402d9b7144..2ea22d57f0 100644
+index 402d9b7144..7ad4d8e85f 100644
 --- a/tgstation.dme
 +++ b/tgstation.dme
 @@ -718,6 +718,7 @@
@@ -24945,7 +24964,15 @@ index 402d9b7144..2ea22d57f0 100644
  #include "modular_bluemoon\code\modules\netrun\core\api.dm"
  #include "modular_bluemoon\code\modules\netrun\core\breach.dm"
  #include "modular_bluemoon\code\modules\netrun\core\cli.dm"
-@@ -5525,6 +5524,11 @@
+@@ -5458,6 +5457,7 @@
+ #include "modular_bluemoon\code\modules\netrun\core\fortress_presets.dm"
+ #include "modular_bluemoon\code\modules\netrun\core\incidents.dm"
+ #include "modular_bluemoon\code\modules\netrun\core\interaction.dm"
++#include "modular_bluemoon\code\modules\netrun\core\library_monitor.dm"
+ #include "modular_bluemoon\code\modules\netrun\core\location.dm"
+ #include "modular_bluemoon\code\modules\netrun\core\machine_routes.dm"
+ #include "modular_bluemoon\code\modules\netrun\core\machine_transport.dm"
+@@ -5525,6 +5525,11 @@
  #include "modular_bluemoon\code\modules\netrun\integration\cybernetics.dm"
  #include "modular_bluemoon\code\modules\netrun\integration\datafiles.dm"
  #include "modular_bluemoon\code\modules\netrun\integration\entity_neural.dm"

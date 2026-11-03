@@ -59,6 +59,10 @@
                       "sha256":  "9ed81248124c17708a0a706193f1e044d0132e10cb617ba49590c7d224f9856f"
                   },
                   {
+                      "path":  "code/modules/unit_tests/netrun_library_monitor.dm",
+                      "sha256":  "1b774f0096c38fa86f1c203dc9cafb090ba395c285a87165289bc63cb8c2b5c9"
+                  },
+                  {
                       "path":  "code/modules/unit_tests/pull_layer_ordering.dm",
                       "sha256":  "7e144e33c8557db9b3ffda5fc52eff6e0f27ff123f18454007f94eb53081d61f"
                   },
@@ -84,11 +88,15 @@
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/ASYNC_EXTERNAL.md",
-                      "sha256":  "5fb25290ebd821b6f64557ff3ae581dba6decfc13df6b469f1228297fd7aca5c"
+                      "sha256":  "6aca39e63db7dd76aa03f67fe814e40df2c968bf528851d4c88a89145418ee7d"
+                  },
+                  {
+                      "path":  "modular_bluemoon/code/modules/netrun/core/library_monitor.dm",
+                      "sha256":  "5853325391f15dd2f358af3b8df549847aa6479ed7d41fb1f5811351233041a9"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_core.dm",
-                      "sha256":  "10186b644637dae8eac54ddef05c2d686cd4428999d61cfbcd9f4b52819cc5bd"
+                      "sha256":  "416971348060f13b0a4805275e10800f43fc292d94288d940b3b3dede6875883"
                   },
                   {
                       "path":  "modular_bluemoon/code/modules/netrun/integration/external_effects.dm",
@@ -119,6 +127,14 @@
                       "sha256":  "0b6ee7b8f40319c12963c9b41ff0ce0f16a2f8cefe10d72e6521e9e10d392e68"
                   },
                   {
+                      "path":  "tgui/packages/tgui/interfaces/NetrunMonitor.test.tsx",
+                      "sha256":  "1297c0880290d48c211cd8d3912066e8527d7e57a55243d6d13f4182917be35a"
+                  },
+                  {
+                      "path":  "tgui/packages/tgui/interfaces/NetrunMonitor.tsx",
+                      "sha256":  "1310126c164e2c6a4f265647dac380d356bbe9542d3f52986249d5c7ae58a147"
+                  },
+                  {
                       "path":  "tgui/packages/tgui/interfaces/NetrunTerminal/LiveCoreMap.test.tsx",
                       "sha256":  "3c372b2425265779aa20e4b9acd3bc4a5a7851ad16fc7a1e7095b3f193d72b63"
                   },
@@ -144,7 +160,7 @@
                   },
                   {
                       "path":  "tools/netrun/core-source.json",
-                      "sha256":  "f2fedeb1924019ffb01618f09a45fdc716c2c7cb3886b955adfe366ee024c8b2"
+                      "sha256":  "0f2baad2e1ea8ef5421c26b1fd84ee244b77418887042469c00fee1f1aac0567"
                   },
                   {
                       "path":  "tools/netrun/core-source.mjs",
@@ -219,6 +235,6 @@
                       "sha256":  "5eb5372449e4ca92085b82cc078a6594f6dc1612a3a7d2b42309810c51c0ca01"
                   }
               ],
-    "patch_sha256":  "78d373dffb1f1c0aebdf7359c3ddc89a5ad81df9be011270409ddd9a4664e06c",
-    "source_revision":  "b91725c567dcdd4379d45ef7cd701ab7e270b515"
+    "patch_sha256":  "24ba184fcea6d9532e025715adf65ce0bdd9cce53554ac0afde176bcdbb0ad8a",
+    "source_revision":  "ca8b15667f29cccad2682ec71fb88e9448b290d3"
 }

@@ -86,7 +86,7 @@ public sealed class RouteResult
     public ulong AvailabilityVersion { get; }
 
     /// <summary>
-    /// Создаёт bounded immutable ответ внешнего IRouteProvider. Проверяет целые поколения,
+    /// Создаёт immutable ответ внешнего IRouteProvider с необязательным локальным пределом. Проверяет целые поколения,
     /// конечную неотрицательную стоимость и согласованность Status с наличием пути.
     /// </summary>
     /// <param name="status">Известная категория результата.</param>
@@ -94,12 +94,12 @@ public sealed class RouteResult
     /// <param name="latencyDs">Стоимость Found в децисекундах; при отказе требуется ноль.</param>
     /// <param name="graphVersion">Версия исходного graph.</param>
     /// <param name="availabilityVersion">Версия использованного overlay.</param>
-    /// <param name="maxPathLength">Локальный предел копии, 1..10000 узлов.</param>
+    /// <param name="maxPathLength">Положительный локальный предел копии; default int.MaxValue не задаёт application quota.</param>
     public static RouteResult Create(RouteStatus status, IEnumerable<NodeKey> path, double latencyDs,
         ulong graphVersion, ulong availabilityVersion, int maxPathLength = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(path);
-        if (!Enum.IsDefined(status) || !double.IsFinite(latencyDs) || latencyDs < 0 || maxPathLength is < 1 or > 10_000)
+        if (!Enum.IsDefined(status) || !double.IsFinite(latencyDs) || latencyDs < 0 || maxPathLength < 1)
             throw new ArgumentException("Invalid route result.");
         var copy = new List<NodeKey>();
         foreach (var key in path)

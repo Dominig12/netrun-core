@@ -5,6 +5,9 @@ using Netrun.Core.Runtime;
 using Netrun.Core.Transport;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
+using Netrun.Core.Entities;
+using Netrun.Core.Scheduling;
+using Netrun.Core.Plugins;
 using Netrun.Protocol;
 
 namespace Netrun.Host;
@@ -138,6 +141,16 @@ internal static class RuntimeOutputJson
                     writer.WritePropertyName("payload");
                     NetworkValueJson.Write(writer, completed.Payload ?? NetworkValue.Null);
                     break;
+                case ServiceWatchEvent changed:
+                    writer.WriteString("kind", "service_watch_event");
+                    writer.WriteString("change", changed.Change);
+                    writer.WriteString("family", changed.Family);
+                    writer.WriteString("tag", changed.Tag);
+                    writer.WritePropertyName("service");
+                    if (changed.Service is { } observed) WriteService(writer, observed); else writer.WriteNullValue();
+                    writer.WriteBoolean("online", changed.Online);
+                    Counter(writer, "directory_revision", changed.DirectoryRevision);
+                    break;
                 case DiscoveryPage page:
                     writer.WriteString("kind", "discovery_page");
                     writer.WriteStartArray("candidates");
@@ -145,6 +158,87 @@ internal static class RuntimeOutputJson
                     writer.WriteEndArray();
                     writer.WriteBoolean("complete", page.Complete);
                     writer.WriteString("code", page.Code);
+                    break;
+                case EntityNavigationPage navigation:
+                    writer.WriteString("kind", "entity_navigation_page");
+                    writer.WriteStartObject("actor");
+                    writer.WriteString("actor_id", navigation.Actor.Id);
+                    Counter(writer, "generation", navigation.Actor.Generation);
+                    writer.WriteEndObject();
+                    Counter(writer, "actor_revision", navigation.ActorRevision);
+                    writer.WritePropertyName("source");
+                    WriteNode(writer, navigation.Source);
+                    writer.WritePropertyName("destination");
+                    WriteNode(writer, navigation.Destination);
+                    Counter(writer, "graph_version", navigation.GraphVersion);
+                    Counter(writer, "graph_input_sequence", navigation.GraphInputSequence);
+                    Counter(writer, "availability_version", navigation.AvailabilityVersion);
+                    Counter(writer, "page_index", navigation.PageIndex);
+                    writer.WriteStartArray("nodes");
+                    foreach (var node in navigation.Nodes) WriteNode(writer, node);
+                    writer.WriteEndArray();
+                    writer.WriteBoolean("complete", navigation.Complete);
+                    writer.WriteString("code", navigation.Code);
+                    break;
+                case EntityChanged changed:
+                    writer.WriteString("kind", "entity_changed");
+                    writer.WritePropertyName("actor"); EntityDataJson.Write(writer, changed.Actor);
+                    writer.WritePropertyName("view"); EntityDataJson.Write(writer, changed.View);
+                    writer.WriteString("code", changed.Code);
+                    break;
+                case EntityNativeEffect effect:
+                    writer.WriteString("kind", "entity_native_effect");
+                    writer.WritePropertyName("actor"); EntityDataJson.Write(writer, effect.Actor);
+                    writer.WriteString("effect_id", effect.EffectId);
+                    Counter(writer, "residence_revision", effect.ResidenceRevision);
+                    writer.WritePropertyName("source"); WriteNode(writer, effect.Source);
+                    writer.WritePropertyName("destination"); WriteNode(writer, effect.Destination);
+                    break;
+                case CoreTaskCompleted completed:
+                    writer.WriteString("kind", "core_task_completed");
+                    Counter(writer, "task_sequence", completed.TaskSequence);
+                    writer.WriteBoolean("success", completed.Success);
+                    writer.WriteString("code", completed.Code);
+                    break;
+                case ModuleCompleted module:
+                    writer.WriteString("kind", "module_result"); writer.WriteString("module_id", module.ModuleId);
+                    writer.WriteBoolean("success", module.Success); writer.WriteString("code", module.Code);
+                    writer.WritePropertyName("result"); NetworkValueJson.Write(writer, module.Result);
+                    break;
+                case ModuleProjectionChanged projection:
+                    writer.WriteString("kind", "module_projection"); writer.WriteString("module_id", projection.ModuleId);
+                    writer.WriteString("topic", projection.Topic); writer.WritePropertyName("data"); NetworkValueJson.Write(writer, projection.Data);
+                    break;
+                case StorageOperationCompleted storage:
+                    writer.WriteString("kind", "storage_completed"); writer.WritePropertyName("result");
+                    EntityDataJson.Write(writer, storage.Result);
+                    break;
+                case StorageChangedProjection storage:
+                    writer.WriteString("kind", "storage_changed"); writer.WritePropertyName("change");
+                    EntityDataJson.Write(writer, storage.Change);
+                    break;
+                case CombatIntentCompleted combat:
+                    writer.WriteString("kind", "combat_completed");
+                    writer.WritePropertyName("actor"); EntityDataJson.Write(writer, combat.Actor);
+                    writer.WriteBoolean("accepted", combat.Accepted); writer.WriteString("code", combat.Code);
+                    writer.WritePropertyName("encounter"); EntityDataJson.Write(writer, combat.Encounter);
+                    writer.WritePropertyName("state"); EntityDataJson.Write(writer, combat.State);
+                    writer.WritePropertyName("installed_program_ids"); EntityDataJson.Write(writer, combat.InstalledProgramIds);
+                    break;
+                case CombatStateChanged combat:
+                    writer.WriteString("kind", "combat_changed");
+                    writer.WritePropertyName("actor"); EntityDataJson.Write(writer, combat.Actor);
+                    writer.WritePropertyName("encounter"); EntityDataJson.Write(writer, combat.Encounter);
+                    writer.WritePropertyName("state"); EntityDataJson.Write(writer, combat.State);
+                    writer.WriteString("code", combat.Code);
+                    break;
+                case CombatNativeEffect combat:
+                    writer.WriteString("kind", "combat_native_effect");
+                    writer.WritePropertyName("actor"); EntityDataJson.Write(writer, combat.Actor);
+                    writer.WriteString("effect_id", combat.EffectId); Counter(writer, "entity_revision", combat.EntityRevision);
+                    Counter(writer, "residence_revision", combat.ResidenceRevision);
+                    writer.WritePropertyName("node"); WriteNode(writer, combat.Node);
+                    writer.WritePropertyName("effect"); EntityDataJson.Write(writer, combat.Effect);
                     break;
                 case ProjectionPage projection:
                     if (projection.Rows.Count > 32) throw new ProtocolException("projection_size");

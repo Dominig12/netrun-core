@@ -4,6 +4,10 @@ using Netrun.Core.Transport;
 using Netrun.Core.Communication;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
+using Netrun.Core.Plugins;
+using Netrun.Core.Entities;
+using Netrun.Core.Scheduling;
+using Netrun.Core.Storage;
 
 namespace Netrun.Core.Runtime;
 
@@ -38,6 +42,12 @@ public sealed record DiscoverServices(DiscoveryRequest Request) : RuntimeCommand
 /// <summary>Отменяет ещё активный поиск и отзывает его непрочитанные страницы.</summary>
 /// <param name="Key">Точный producer/serial исходного discovery запроса.</param>
 public sealed record CancelDiscovery(RequestKey Key) : RuntimeCommand;
+
+/// <summary>Long-lived Core-owned service family/tag observation for one exact native source.</summary>
+public sealed record WatchServices(ServiceWatchRequest Request) : RuntimeCommand;
+
+/// <summary>Cancel an existing watch without performing native effects.</summary>
+public sealed record UnwatchServices(RequestKey Key) : RuntimeCommand;
 
 /// <summary>Начинает одноразовую read-only graph/routes проекцию для native UI.</summary>
 /// <param name="Request">Typed вид таблицы, exact source и route availability policy.</param>
@@ -139,8 +149,15 @@ public sealed record RuntimeResult(ApplyResult Apply, MirrorSyncState SyncState,
 /// <param name="Projection">Пределы UI query slots и страниц; runtime ограничивает PageRows значением 32.</param>
 /// <param name="SourceTrees">Пределы общего полного route-tree поиска и bounded LRU.</param>
 /// <param name="GraphSynchronization">Ограничения единственного persistent graph stream.</param>
+/// <param name="Plugins">Набор подключаемых расширений; их вклады применяются при создании runtime. null — без расширений.</param>
+/// <param name="EntityNavigation">Пределы очереди поиска путей сущностей, независимой от UI проекций.</param>
+/// <param name="Entities">Пределы registry и actor projections.</param>
+/// <param name="Tasks">Пределы общей FIFO очереди и terminal outcomes.</param>
+/// <param name="Storage">Ограничения принадлежащих ядру файлов/носителей и их immutable проекций.</param>
 public sealed record RuntimeOptions(CoreLimits? Core = null, TopologyOptions? Topology = null,
     RouterOptions? Router = null, TransportOptions? Transport = null, bool DeferTopologyBuild = false,
     int PumpWorkBudget = int.MaxValue, CommunicationOptions? Communication = null, DiscoveryOptions? Discovery = null,
     ProjectionOptions? Projection = null, SourceTreeOptions? SourceTrees = null,
-    GraphSynchronizationOptions? GraphSynchronization = null);
+    GraphSynchronizationOptions? GraphSynchronization = null, IReadOnlyList<INetrunPlugin>? Plugins = null,
+    EntityNavigationOptions? EntityNavigation = null, EntityWorldOptions? Entities = null,
+    CoreTaskQueueOptions? Tasks = null, StorageWorldOptions? Storage = null);

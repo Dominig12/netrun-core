@@ -31,21 +31,23 @@ JSON-тело непрозрачно для моста: его схему, hands
 | `netrun_status` | нет | `{state,code,outbound_frames,outbound_bytes,inbound_frames,inbound_bytes}` |
 | `netrun_close` | нет | `{state,code}` |
 
-Все числовые аргументы — canonical положительные ASCII строки без ведущих нулей.
+Все числовые аргументы — canonical ASCII строки без ведущих нулей или знака.
+Точный `"0"` разрешён только для отключённых connection quotas.
 Пределы:
 
 - host — только `127.0.0.1`; DNS, внешние адреса и IPv6 пока не разрешены;
 - port — 1..65535;
-- connection max_frames и poll max_frames — 1..128;
-- max_queued_bytes — 1048576..16777216, отдельно для каждого направления;
+- connection max_frames — `0` без квоты либо положительное значение до `size_t` maximum;
+- max_queued_bytes — `0` без квоты либо 1048576..`size_t` maximum, отдельно для каждого направления;
+- poll max_frames — 1..128, размер одной порции ABI, не connection quota;
 - max_frame_bytes — 1..1048576;
 - poll max_bytes — 128..8388608, предел **полного сериализованного ответа**.
 
 `state`: `connecting`, `connected`, `disconnected`, `closing`, `closed`.
 Успешный open возвращает `accepted`, а не подтверждение соединения. Успешный
-enqueue означает копирование в ограниченную очередь, а не application ACK.
+enqueue означает копирование в очередь, а не application ACK.
 `would_block` означает, что квота или try-lock сейчас недоступны; повтор должен
-подчиняться внешнему bounded admission, а не busy loop в игровом потоке.
+кооперативно уступать CPU, не создавая busy loop в игровом потоке.
 
 Poll возвращает исходные тела как JSON strings. Он предварительно считает
 escaping и полный размер ответа. Если первый кадр не помещается, возвращает
@@ -135,7 +137,15 @@ SDK и cache находятся вне репозитория. `native/bin/`, Py
 также проверяет fragmented/concatenated frames, escaping-aware poll budget,
 ограничение входной очереди, oversized header, некорректный UTF-8 и bounded close.
 
-Локальная проверка 2026-11-02: все три targets собраны с
+Локальная Windows проверка 2026-11-03: свежие x86/x64 DLL собраны, 16/16 native
+тестов прошли без пропусков. Проверены canonical zero quotas, 160 buffered frames
+и более 1 MiB без искусственной квоты, отдельные finite quotas, настоящие BYOND
+x86 open/echo/shutdown и module lifetime. Tiny E2E использует production DM
+exporter/effects и verbatim monitoring receiver: реальная idle telemetry не
+меняет application sequence/ACK. Проверка ELF в этом наборе читает export table
+готового Linux файла и не доказывает Linux runtime.
+
+Историческая проверка 2026-11-02: все три targets собраны с
 `-Wall -Wextra -Werror`; 13 Python/native проверок прошли, включая настоящий
 BYOND 516.1688 x86 smoke и production client/effects shutdown при живом worker.
 До module pinning последний сценарий и isolated Windows `FreeLibrary` давали

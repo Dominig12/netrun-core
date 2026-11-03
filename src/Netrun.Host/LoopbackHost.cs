@@ -14,6 +14,8 @@ public sealed class LoopbackHost : IAsyncDisposable
     private readonly LoopbackHostOptions _options;
     /// <summary>Создание нового доменного состояния отделено от сетевого цикла.</summary>
     private readonly IHostSessionFactory _factory;
+    /// <summary>Диагностика не ожидает I/O и не содержит handshake token.</summary>
+    private readonly HostLog? _log;
     /// <summary>Listener всегда связан с IPv4 loopback; backlog ограничен одним ожидающим соединением.</summary>
     private readonly TcpListener _listener;
     /// <summary>Инкарнация протокола Host; меняется между сессиями при заполнении retired binding history.</summary>
@@ -29,12 +31,13 @@ public sealed class LoopbackHost : IAsyncDisposable
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
     /// <summary>Открывает только локальный endpoint; авторизация каждой сессии выполняется отдельно.</summary>
-    public LoopbackHost(LoopbackHostOptions options, IHostSessionFactory factory)
+    public LoopbackHost(LoopbackHostOptions options, IHostSessionFactory factory, HostLog? log = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(factory);
         _options = options;
         _factory = factory;
+        _log = log;
         _listener = new TcpListener(IPAddress.Loopback, options.Port);
         _listener.Start(1);
     }
@@ -45,22 +48,29 @@ public sealed class LoopbackHost : IAsyncDisposable
         if (_running)
             throw new InvalidOperationException("Host is already running.");
         _running = true;
+        _log?.TryWrite(new(HostLogLevel.Information, "host_started"));
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 using var client = await _listener.AcceptTcpClientAsync(cancellationToken);
                 client.NoDelay = true;
-                try { await ServeAsync(client.GetStream(), cancellationToken); }
-                catch (IOException) { }
-                catch (SocketException) { }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+                var connectionId = Guid.NewGuid().ToString("N");
+                var reason = "peer_closed";
+                _log?.TryWrite(new(HostLogLevel.Information, "connection_accepted", connectionId));
+                try { await ServeAsync(client.GetStream(), connectionId, cancellationToken); }
+                catch (IOException) { reason = "io_error"; }
+                catch (SocketException) { reason = "socket_error"; }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { reason = "io_timeout"; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { reason = "host_stopping"; throw; }
+                finally { _log?.TryWrite(new(HostLogLevel.Information, "connection_closed", connectionId, Code: reason)); }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         finally
         {
             _running = false;
+            _log?.TryWrite(new(HostLogLevel.Information, "host_stopped"));
         }
     }
 
@@ -72,7 +82,7 @@ public sealed class LoopbackHost : IAsyncDisposable
     }
 
     /// <summary>Проверяет hello до создания доменного состояния, затем связывает framed stream с одним binding.</summary>
-    private async Task ServeAsync(NetworkStream stream, CancellationToken cancellationToken)
+    private async Task ServeAsync(NetworkStream stream, string connectionId, CancellationToken cancellationToken)
     {
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         handshake.CancelAfter(_options.HandshakeTimeout);
@@ -84,17 +94,20 @@ public sealed class LoopbackHost : IAsyncDisposable
             var body = await FramedStream.ReadAsync(stream, handshake.Token);
             epochs = body is null ? null : ReadHello(body, out duplex, out monitoring);
         }
-        catch (ProtocolException)
+        catch (ProtocolException error)
         {
+            _log?.TryWrite(new(HostLogLevel.Warning, "protocol_error", connectionId, Code: error.Code));
             epochs = null;
         }
         if (epochs is null)
         {
+            _log?.TryWrite(new(HostLogLevel.Warning, "authentication_rejected", connectionId, Code: "authentication_failed"));
             await FramedStream.WriteAsync(stream, Error("authentication_failed"), handshake.Token);
             return;
         }
         if (_usedBindings.Contains((epochs.World, epochs.Binding)))
         {
+            _log?.TryWrite(new(HostLogLevel.Warning, "authentication_rejected", connectionId, epochs, Code: "binding_retired"));
             await FramedStream.WriteAsync(stream, Error("binding_retired"), handshake.Token);
             return;
         }
@@ -108,9 +121,12 @@ public sealed class LoopbackHost : IAsyncDisposable
             epochs = epochs with { Engine = _engineEpoch };
         }
         _usedBindings.Add((epochs.World, epochs.Binding));
+        var diagnostics = _log is null ? null : new HostLogSession(_log, connectionId, epochs);
         using var session = _factory.Create(epochs);
+        if (session is RuntimeHostSession runtime) runtime.AttachLog(diagnostics);
         try
         {
+            diagnostics?.Write(HostLogLevel.Information, "session_started");
             if (duplex && session is not IStreamingHostSession)
                 throw new ProtocolException("duplex_unsupported");
             if (duplex) ((IStreamingHostSession)session).EnableStreaming();
@@ -150,6 +166,7 @@ public sealed class LoopbackHost : IAsyncDisposable
         }
         catch (ProtocolException error)
         {
+            diagnostics?.Write(HostLogLevel.Warning, "protocol_error", error.Code);
             using var failure = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             failure.CancelAfter(_options.HandshakeTimeout);
             await FramedStream.WriteAsync(stream, Error(error.Code), failure.Token);
@@ -157,6 +174,7 @@ public sealed class LoopbackHost : IAsyncDisposable
         finally
         {
             session.Disconnected();
+            diagnostics?.Write(HostLogLevel.Information, "session_disconnected");
         }
     }
 

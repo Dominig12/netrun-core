@@ -15,6 +15,8 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
     private readonly Epochs _epochs;
     /// <summary>Единственный mutable владелец mirror, graph, routes и packets.</summary>
     private readonly NetworkRuntime _runtime;
+    /// <summary>Подключается после аутентификации, хранит только безопасные диагностические поля.</summary>
+    private HostLogSession? _log;
     /// <summary>Кадры удерживаются до обработки DM; запись в сокет не удаляет их из журнала.</summary>
     private OutputReplayJournal _outputs = new();
     /// <summary>Output ACK освобождает отдельный slot входного кадра; push не расходует эти восемь slots.</summary>
@@ -29,6 +31,8 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
     private double _lastApplyUs, _lastPumpUs, _lastProcessingUs, _maxApplyUs, _maxPumpUs, _maxProcessingUs;
     /// <summary>Максимум одного не поместившегося immutable события; не теряется при границе кадра.</summary>
     private byte[]? _pendingEvent;
+    /// <summary>Отложенная диагностическая корреляция без удержания исходного события или его payload.</summary>
+    private HostLogEvent? _pendingEventLog;
     /// <summary>Независимые от gameplay counters только для negotiated мониторинга.</summary>
     private ulong _monitorSequence;
     /// <summary>Физический возраст сессии не используется как simulation clock.</summary>
@@ -61,6 +65,15 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
             writer.WriteNumber("sector_count", _runtime.Sectors.Count);
             writer.WriteNumber("active_requests", _runtime.ActiveRequestCount);
             writer.WriteNumber("active_discovery", _runtime.ActiveDiscoveryCount);
+            writer.WriteNumber("active_service_watches", _runtime.ActiveServiceWatchCount);
+            writer.WriteNumber("entity_count", _runtime.EntityCount);
+            writer.WriteNumber("active_entity_navigation", _runtime.ActiveEntityNavigationCount);
+            writer.WriteNumber("pending_core_tasks", _runtime.PendingTaskCount);
+            writer.WriteNumber("storage_count", _runtime.StorageStoreCount);
+            writer.WriteNumber("file_count", _runtime.StorageFileCount);
+            writer.WriteNumber("module_count", _runtime.Modules.Count);
+            writer.WriteString("enqueued_task_sequence", _runtime.EnqueuedTaskSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            writer.WriteString("completed_task_sequence", _runtime.CompletedTaskSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
             writer.WriteNumber("active_projections", _runtime.ActiveProjectionCount);
             writer.WriteNumber("pending_events", _runtime.EventCount);
             writer.WriteNumber("input_unacked", _inputReplies.Count);
@@ -117,6 +130,29 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
 
     /// <summary>Default quotas отключены; wire framing и causal/replay identities остаются строгими.</summary>
     public StreamingHostLimits Limits { get; }
+
+    /// <summary>Не меняет доменные параметры и не исполняет сетевую работу.</summary>
+    internal void AttachLog(HostLogSession? log) => _log = log;
+
+    /// <summary>Постоянные scalar-снимки не требуют согласования DM monitor и не попадают в replay journal.</summary>
+    internal void RecordDiagnostics(HostConnectionMetrics connection)
+    {
+        if (_log is not { TelemetryDue: true }) return;
+        _log.Telemetry(new(_runtime.State.ToString(), _runtime.AppliedSequence, _runtime.Graph?.Version ?? 0,
+            _runtime.TopologyPending, _runtime.Nodes.Count, _runtime.Services.Count, _runtime.ActiveRequestCount,
+            _runtime.ActiveDiscoveryCount, _runtime.ActiveProjectionCount, _runtime.EventCount, _inputReplies.Count,
+            _outputs.LastSequence - _outputs.Acknowledged, _outputs.Count, _outputs.Bytes,
+            connection.InputQueueFrames, connection.InputQueueBytes, connection.OutputQueueFrames, connection.OutputQueueBytes,
+            _lastProcessingUs, _maxProcessingUs, GC.GetTotalMemory(false)));
+    }
+
+    /// <summary>Один вызов доменной команды и отдельная диагностическая проекция результата.</summary>
+    private RuntimeResult ApplyInput(RuntimeInput input)
+    {
+        var result = _runtime.Apply(input);
+        _log?.Applied(input, result);
+        return result;
+    }
 
     /// <summary>Проверяет output ACK перед admission; heartbeat не двигает логическое время мира.</summary>
     public ValueTask<byte[]> ProcessAsync(ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
@@ -176,7 +212,7 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
                 Receive(message);
                 Reserve(message, true, facts.Count);
                 var applyStarted = Stopwatch.GetTimestamp();
-                facts.Add((_runtime.Apply(packet.Input), packet.Input.Sequence));
+                facts.Add((ApplyInput(packet.Input), packet.Input.Sequence));
                 applyUs += Stopwatch.GetElapsedTime(applyStarted).TotalMicroseconds;
             }
             else
@@ -234,13 +270,13 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
         var applyStarted = Stopwatch.GetTimestamp();
         if (message is RuntimePacket packet)
         {
-            outcomes.Add((_runtime.Apply(packet.Input), packet.Input.Sequence));
+            outcomes.Add((ApplyInput(packet.Input), packet.Input.Sequence));
         }
         else if (message is RuntimeInputBatch batch)
         {
             foreach (var input in batch.Inputs)
             {
-                var outcome = _runtime.Apply(input);
+                var outcome = ApplyInput(input);
                 outcomes.Add((outcome, input.Sequence));
                 // Не применять хвост после нарушенного causal prefix. DM получит отказ и выполнит resync.
                 if (outcome.Apply.Status is not (ApplyStatus.Applied or ApplyStatus.Duplicate)) break;
@@ -313,6 +349,7 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
     {
         var started = Stopwatch.GetTimestamp();
         _runtime.Pump();
+        _log?.Health(_runtime.State, _runtime.TopologyError, _runtime.CommunicationError);
         _lastPumpUs = Stopwatch.GetElapsedTime(started).TotalMicroseconds;
         _maxPumpUs = Math.Max(_maxPumpUs, _lastPumpUs);
     }
@@ -336,6 +373,7 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
             {
                 if (!_runtime.TryDequeueEvent(out var next) || next is null)
                     break;
+                _pendingEventLog = _log?.DescribeEvent(next);
                 entry = RuntimeOutputJson.Event(next);
             }
             if (entry.Length + overhead > FramedStream.MaxFrameBytes)
@@ -346,6 +384,8 @@ public sealed class RuntimeHostSession : IMonitoredHostSession
                 break;
             }
             entries.Add(entry);
+            _log?.Event(_pendingEventLog, _outputs.LastSequence + 1);
+            _pendingEventLog = null;
             total += entry.Length + 1;
             _pendingEvent = null;
         }

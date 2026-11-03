@@ -1,5 +1,7 @@
 using Netrun.Core;
 using Netrun.Host;
+using Netrun.Core.Plugins;
+using Netrun.Core.Runtime;
 using System.Globalization;
 using System.Runtime.InteropServices;
 
@@ -9,14 +11,18 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
 // Docker SIGTERM должен закрывать listener и классифицировать незавершённые native invocation.
 using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM,
     context => { context.Cancel = true; shutdown.Cancel(); });
+// Диагностика создаётся только в serve; stdout offline/framed стендов остаётся их собственным протоколом.
+HostLog? diagnostics = null;
 try
 {
     if (args is ["serve"] or ["serve", _])
     {
+        diagnostics = new HostLog(Console.Error, HostLogOptions.FromEnvironment());
         var portText = args.Length == 2 ? args[1] : Environment.GetEnvironmentVariable("NETRUN_PORT") ?? "18462";
         if (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port) || port is < 1 or > 65535)
         {
             Console.Error.WriteLine("invalid_port");
+            diagnostics.TryWrite(new(HostLogLevel.Error, "startup_failed", Code: "invalid_port"));
             return 2;
         }
         var token = Environment.GetEnvironmentVariable("NETRUN_SESSION_TOKEN");
@@ -29,9 +35,16 @@ try
         if (token is null)
         {
             Console.Error.WriteLine("session_token_missing");
+            diagnostics.TryWrite(new(HostLogLevel.Error, "startup_failed", Code: "session_token_missing"));
             return 2;
         }
-        await using var host = new LoopbackHost(new(port, token), new RuntimeHostSessionFactory());
+        // Только явные пути доверенных сборок; нет сканирования каталогов или загрузки из сети.
+        var pluginPaths = Environment.GetEnvironmentVariable("NETRUN_PLUGIN_PATHS") is { } configuredPlugins
+            ? configuredPlugins.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+        using var plugins = PluginLoader.Load(pluginPaths);
+        await using var host = new LoopbackHost(new(port, token),
+            new RuntimeHostSessionFactory(new RuntimeOptions(Plugins: plugins.Plugins)), diagnostics);
         Console.Out.WriteLine($"NETRUN Host listening on loopback:{host.Port}");
         await host.RunAsync(shutdown.Token);
         return 0;
@@ -62,15 +75,28 @@ catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
 catch (IOException)
 {
     Console.Error.WriteLine("io_error");
+    diagnostics?.TryWrite(new(HostLogLevel.Error, "host_failed", Code: "io_error"));
+    return 2;
+}
+catch (PluginException error)
+{
+    Console.Error.WriteLine(error.Code);
+    diagnostics?.TryWrite(new(HostLogLevel.Error, "plugin_failed", Code: error.Code));
     return 2;
 }
 catch (UnauthorizedAccessException)
 {
     Console.Error.WriteLine("file_access_denied");
+    diagnostics?.TryWrite(new(HostLogLevel.Error, "host_failed", Code: "file_access_denied"));
     return 2;
 }
 catch (ArgumentException)
 {
     Console.Error.WriteLine("invalid_arguments");
+    diagnostics?.TryWrite(new(HostLogLevel.Error, "host_failed", Code: "invalid_arguments"));
     return 2;
+}
+finally
+{
+    if (diagnostics is not null) await diagnostics.DisposeAsync();
 }

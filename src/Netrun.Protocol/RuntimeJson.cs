@@ -7,6 +7,8 @@ using Netrun.Core.Runtime;
 using Netrun.Core.Transport;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
+using Netrun.Core.Entities;
+using Netrun.Core.Plugins;
 
 namespace Netrun.Protocol;
 
@@ -33,7 +35,7 @@ public sealed record RuntimeInputBatch(IReadOnlyList<RuntimeInput> Inputs, ulong
 public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int MaxEvents = 64) : RuntimeMessage(Epochs, AckOutputSequence);
 
 /// <summary>Строгая runtime-схема v1.3; команды не смешиваются с world facts внутри одного атомарного frame.</summary>
-public static class RuntimeJson
+public static partial class RuntimeJson
 {
     /// <summary>Согласуемый hello_ack предел команд; не увеличивает бюджет Pump или native events.</summary>
     public const int MaxInputCommands = 16;
@@ -225,13 +227,30 @@ public static class RuntimeJson
     /// <summary>Выделяет только логические команды; неизвестные world kinds затем отвергает BatchJson.</summary>
     private static bool IsCommand(string kind) => kind is "request_submit" or "request_cancel" or "invocation_result" or "route_query" or "backbone_configure" or
         "service_discover" or "service_discovery_cancel" or "projection_query" or "projection_cancel" or "anchor_query" or
-        "graph_sync_start" or "graph_sync_continue" or "graph_sync_cancel";
+        "graph_sync_start" or "graph_sync_continue" or "graph_sync_cancel" or "service_watch" or "service_unwatch" or
+        "entity_navigation_query" or "entity_navigation_cancel" or "entity_operation" or "entity_effect_result" or "module_request" ||
+        IsStorageWireKind(kind) || IsCombatWireKind(kind);
 
     /// <summary>Разбирает allowlisted логическую команду с точным набором обязательных nullable-полей.</summary>
     private static RuntimeCommand ReadCommand(JsonElement entry)
     {
         switch (Text(entry.GetProperty("kind"), 128))
         {
+            case "storage_register" or "storage_remove" or "storage_seed" or "storage_operation": return ReadStorageCommand(entry);
+            case "combat_intent" or "combat_actor_configure": return ReadCombatCommand(entry);
+            case "module_request":
+                Fields(entry, "kind", "request_id", "module_id", "operation", "payload");
+                var moduleRequest = new ModuleRequest(RequestId(entry.GetProperty("request_id")), Text(entry.GetProperty("module_id"), 64),
+                    Text(entry.GetProperty("operation"), 64), NetworkValueJson.Decode(entry.GetProperty("payload")));
+                if (!ModuleRequestRules.IsValid(moduleRequest)) throw Schema();
+                return new SubmitModuleRequest(moduleRequest);
+            case "entity_operation": return ReadEntityOperation(entry);
+            case "entity_effect_result": return ReadEntityEffectResult(entry);
+            case "entity_navigation_query":
+                return ReadEntityNavigation(entry);
+            case "entity_navigation_cancel":
+                Fields(entry, "kind", "request_id");
+                return new CancelEntityNavigation(RequestId(entry.GetProperty("request_id")));
             case "request_submit":
                 return ReadSubmit(entry);
             case "request_cancel":
@@ -246,6 +265,14 @@ public static class RuntimeJson
                 return new DiscoverServices(new DiscoveryRequest(RequestId(entry.GetProperty("request_id")), ReadService(entry.GetProperty("source")),
                     Text(entry.GetProperty("destination_family"), 128), NullableText(entry.GetProperty("recipient_tag"), 256), communications,
                     requestedFrequency, Integer(entry.GetProperty("max_results"), 1, int.MaxValue)));
+            case "service_watch":
+                Fields(entry, "kind", "request_id", "source", "destination_family", "recipient_tag");
+                return new WatchServices(new ServiceWatchRequest(RequestId(entry.GetProperty("request_id")),
+                    ReadService(entry.GetProperty("source")), Text(entry.GetProperty("destination_family"), 128),
+                    NullableText(entry.GetProperty("recipient_tag"), 256)));
+            case "service_unwatch":
+                Fields(entry, "kind", "request_id");
+                return new UnwatchServices(RequestId(entry.GetProperty("request_id")));
             case "service_discovery_cancel":
                 Fields(entry, "kind", "request_id");
                 return new CancelDiscovery(RequestId(entry.GetProperty("request_id")));
@@ -353,6 +380,23 @@ public static class RuntimeJson
     {
         switch (command)
         {
+            case RegisterStorage or RemoveStorage or SeedStorageFile or SubmitStorageOperation: ValidateStorageCommand(command); break;
+            case SubmitCombatIntent or ConfigureActorCombat: ValidateCombatCommand(command); break;
+            case SubmitModuleRequest module:
+                if (!ModuleRequestRules.IsValid(module.Request)) throw Schema();
+                break;
+            case SubmitEntityOperation entity:
+                if (!EntityWorld.IsValidOperation(entity.Operation) || entity.Access is not null &&
+                    !Netrun.Core.Access.EntityAccessAuthority.IsValidSnapshot(entity.Access)) throw Schema();
+                break;
+            case FinishEntityEffect finish:
+                ValidateRequestKey(finish.Key);
+                if (!EntityWorld.IsValidResult(finish.Result)) throw Schema();
+                break;
+            case QueryEntityNavigation navigation:
+                if (!EntityNavigationBroker.IsValidRequest(navigation.Request)) throw Schema();
+                break;
+            case CancelEntityNavigation cancel: ValidateRequestKey(cancel.Key); break;
             case SubmitRequest { Request: { } request }:
                 ValidateRequestKey(request.Key);
                 ValidateService(request.Source);
@@ -374,6 +418,10 @@ public static class RuntimeJson
                 if (discover.MaxResults < 1 || discover.Frequency is <= 0 ||
                     !discover.Communications && discover.Frequency is not null) throw Schema();
                 break;
+            case WatchServices watch:
+                if (!ServiceWatchBroker.IsValidRequest(watch.Request)) throw Schema();
+                break;
+            case UnwatchServices unwatch: ValidateRequestKey(unwatch.Key); break;
             case CancelDiscovery cancel: ValidateRequestKey(cancel.Key); break;
             case QueryProjection projection:
                 if (!ProjectionBroker.IsValidRequest(projection.Request)) throw Schema();
@@ -409,6 +457,22 @@ public static class RuntimeJson
         writer.WriteStartObject();
         switch (command)
         {
+            case RegisterStorage or RemoveStorage or SeedStorageFile or SubmitStorageOperation: WriteStorageCommand(writer, command); break;
+            case SubmitCombatIntent or ConfigureActorCombat: WriteCombatCommand(writer, command); break;
+            case SubmitModuleRequest module:
+                writer.WriteString("kind", "module_request"); writer.WriteString("request_id", module.Request.Key.Id);
+                writer.WriteString("module_id", module.Request.ModuleId); writer.WriteString("operation", module.Request.Operation);
+                writer.WritePropertyName("payload"); NetworkValueJson.Write(writer, module.Request.Payload);
+                break;
+            case SubmitEntityOperation entity: WriteEntityOperation(writer, entity); break;
+            case FinishEntityEffect finish: WriteEntityEffectResult(writer, finish); break;
+            case QueryEntityNavigation navigation:
+                WriteEntityNavigation(writer, navigation.Request);
+                break;
+            case CancelEntityNavigation cancel:
+                writer.WriteString("kind", "entity_navigation_cancel");
+                writer.WriteString("request_id", cancel.Key.Id);
+                break;
             case SubmitRequest submit:
                 var request = submit.Request;
                 writer.WriteString("kind", "request_submit");
@@ -442,6 +506,17 @@ public static class RuntimeJson
                 writer.WriteBoolean("communications", discover.Request.Communications);
                 if (discover.Request.Frequency is { } discoveryFrequency) writer.WriteNumber("frequency", discoveryFrequency); else writer.WriteNull("frequency");
                 writer.WriteNumber("max_results", discover.Request.MaxResults);
+                break;
+            case WatchServices watch:
+                writer.WriteString("kind", "service_watch");
+                writer.WriteString("request_id", watch.Request.Key.Id);
+                WriteService(writer, "source", watch.Request.Source);
+                writer.WriteString("destination_family", watch.Request.Family);
+                writer.WriteString("recipient_tag", watch.Request.Tag);
+                break;
+            case UnwatchServices unwatch:
+                writer.WriteString("kind", "service_unwatch");
+                writer.WriteString("request_id", unwatch.Key.Id);
                 break;
             case CancelDiscovery cancel:
                 writer.WriteString("kind", "service_discovery_cancel");

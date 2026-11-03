@@ -111,7 +111,7 @@ class LinuxBridgeTests(unittest.TestCase):
 
     def test_exports_are_exact(self):
         """Проверяет dynamic export table и фактическую загрузку того же ELF64 в setUpClass."""
-        output = subprocess.check_output(["nm", "-D", "--defined-only", str(LIBRARY)], text=True, timeout=5)
+        output = subprocess.check_output(["nm", "-D", "--defined-only", str(LIBRARY)], text=True, timeout=30)
         exported = {line.split()[-1] for line in output.splitlines() if line.split()}
         self.assertEqual({"netrun_open", "netrun_try_enqueue", "netrun_poll", "netrun_status", "netrun_close"}, exported)
 

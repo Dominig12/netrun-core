@@ -5,6 +5,8 @@ using Netrun.Core.Transport;
 using Netrun.Core.Communication;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
+using Netrun.Core.Plugins;
+using Netrun.Core.Entities;
 
 namespace Netrun.Core.Runtime;
 
@@ -12,7 +14,7 @@ namespace Netrun.Core.Runtime;
 /// Последовательный coordinator mirror → topology → routes → transport с общей causal последовательностью.
 /// Clock меняется только подтверждённым RuntimeInput; Pump обслуживает ту же временную отметку.
 /// </summary>
-public sealed class NetworkRuntime : INetworkWorldView, IDisposable
+public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
 {
     /// <summary>Bounded replay хранит hash и безопасный результат команды, но не входной payload.</summary>
     private sealed record ReplayEntry(byte[] Fingerprint, TransportAdmission? Admission,
@@ -24,6 +26,10 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private readonly RuntimeOptions _options;
     /// <summary>Фактические limits mirror и общего semantic ledger.</summary>
     private readonly CoreLimits _core;
+    /// <summary>Метаданные подключённых плагинов, зафиксированные при создании composition.</summary>
+    private readonly IReadOnlyList<PluginMetadata> _plugins;
+    /// <summary>Закрытые вклады плагинов; нормализация выполняется до fingerprint и изменения мира.</summary>
+    private readonly NetrunPluginRegistry _pluginRegistry;
     /// <summary>Владелец snapshot/catch-up и опубликованных world records.</summary>
     private readonly WorldSynchronization _synchronization;
     /// <summary>Владелец стабильных bindings и целых immutable graphs.</summary>
@@ -46,6 +52,8 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private readonly ServiceDirectory _directory;
     /// <summary>Bounded async discovery имеет отдельные query/pages caps; после invalidation больше не выдаёт наблюдения.</summary>
     private ServiceDiscovery? _discovery;
+    /// <summary>Persistent indexed observations; only facts generate notifications.</summary>
+    private ServiceWatchBroker? _serviceWatches;
     /// <summary>Общий bounded full source-tree cache использует тот же live availability overlay, что pair router.</summary>
     private readonly SourceRouteTreeProvider _sourceTrees;
     /// <summary>Одноразовые graph/routes UI проекции без native effects.</summary>
@@ -54,8 +62,11 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private readonly GraphAuthorityTracker _authority;
     /// <summary>Один persistent native mirror stream с явным page ACK и bounded baseline/target.</summary>
     private GraphSynchronizationBroker? _graphSynchronization;
+    /// <summary>Отдельная справедливая очередь поиска путей сущностей; не выполняет native hop.</summary>
+    private EntityNavigationBroker? _entityNavigation;
     /// <summary>Число независимых work/output lanes одного последовательного владельца.</summary>
-    private const int LaneCount = 4;
+    private const int LaneCount = 6;
+    private const int OutputLaneCount = 11;
     /// <summary>Первый work producer следующего Pump; единичный budget справедлив между calls.</summary>
     private int _nextPumpLane;
     /// <summary>Независимый round-robin transport/discovery/projection outputs.</summary>
@@ -104,15 +115,20 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     /// <summary>Число незавершённых bounded запросов; после Dispose — ноль.</summary>
     public int ActiveRequestCount => _transport?.ActiveCount ?? 0;
     /// <summary>Число ожидающих отдачи transport events; payload не включается в диагностику.</summary>
-    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0);
+    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_serviceWatches?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0) + (_entityNavigation?.EventCount ?? 0) + (_entities?.EventCount ?? 0) + (_tasks?.EventCount ?? 0) + _moduleEvents.Count + StorageEventCount + CombatEventCount;
+    /// <summary>Число незавершённых поисков путей сущностей, включая ожидающие выдачи страницы.</summary>
+    public int ActiveEntityNavigationCount => _entityNavigation?.ActiveCount ?? 0;
     /// <summary>Количество активных async lookup, независимо от machine request slots.</summary>
     public int ActiveDiscoveryCount => _discovery?.ActiveCount ?? 0;
+    public int ActiveServiceWatchCount => _serviceWatches?.ActiveCount ?? 0;
     /// <summary>Число живых service IDs в lookup индексе; диагностический getter не копирует registry.</summary>
     public int DiscoveryServiceCount => _directory.Count;
     /// <summary>Монотонная версия actual touched-service изменений lookup индекса.</summary>
     public ulong DiscoveryDirectoryRevision => _directory.Revision;
     /// <summary>Активные одноразовые UI queries, включая terminal страницы до handoff.</summary>
     public int ActiveProjectionCount => _projections?.ActiveCount ?? 0;
+    /// <summary>Метаданные подключённых плагинов в порядке объявления; пусто, если расширений нет.</summary>
+    public IReadOnlyList<PluginMetadata> Plugins => _plugins;
 
     /// <summary>Создаёт composition без endpoint, background worker или автоматического продвижения времени.</summary>
     public NetworkRuntime(Epochs epochs, RuntimeOptions? options = null)
@@ -123,17 +139,23 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         _core = _options.Core ?? new CoreLimits();
         if (_options.PumpWorkBudget < 1)
             throw new ArgumentOutOfRangeException(nameof(options));
+        var plugins = NetrunPluginRegistry.Configure(_options.Plugins);
+        _pluginRegistry = plugins;
+        _plugins = plugins.Plugins;
         _synchronization = new WorldSynchronization(epochs, _core);
         _topology = new NetworkTopology(_options.Topology);
         _availability = new NetworkAvailability(maxNodes: _core.MaxTrackedNodes);
-        _router = new NetworkRouter(_availability, options: _options.Router);
+        _entityNavigation = new EntityNavigationBroker(() => Graph, epochs.Binding, _options.EntityNavigation, _availability);
+        InitializeEntities();
+        _router = new NetworkRouter(_availability, plugins.RouteCostPolicy, _options.Router);
         _communicationPorts = new CommunicationPortCatalog(maxPorts: _core.MaxTrackedNodes);
-        _communicationRoutes = new CommunicationRouter(_communicationPorts, _availability, _router, options: _options.Communication);
+        _communicationRoutes = new CommunicationRouter(_communicationPorts, _availability, _router, plugins.RouteCostPolicy, _options.Communication);
         _transport = new NetworkTransport(this, () => Graph, _router, epochs.Binding, _options.Transport, _communicationRoutes);
-        _sourceTrees = new SourceRouteTreeProvider(_availability, options: _options.SourceTrees);
+        _sourceTrees = new SourceRouteTreeProvider(_availability, plugins.RouteCostPolicy, _options.SourceTrees);
         _directory = new ServiceDirectory(_core.MaxTrackedServices);
         _discovery = new ServiceDiscovery(this, _directory, () => Graph, new SourceTreeRouteProvider(_sourceTrees, _availability),
             epochs.Binding, _options.Discovery, _communicationRoutes);
+        _serviceWatches = new ServiceWatchBroker(this, _directory, epochs.Binding);
         if (_options.Projection?.PageRows > 32)
             throw new ArgumentOutOfRangeException(nameof(options), "Runtime projection pages cannot exceed 32 rows.");
         _authority = new GraphAuthorityTracker(this);
@@ -212,9 +234,9 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         try
         {
             _transport!.Advance(SimulationTimeDs, 0);
-            for (var offset = 0; offset < LaneCount; offset++)
+            for (var offset = 0; offset < OutputLaneCount; offset++)
             {
-                var lane = (_nextOutputLane + offset) % LaneCount;
+                var lane = (_nextOutputLane + offset) % OutputLaneCount;
                 if (!TryLaneEvent(lane, out transportEvent)) continue;
                 if (transportEvent is ServiceInvocation invocation)
                     transportEvent = invocation with
@@ -225,7 +247,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                         AvailabilityInfrastructureStamp = _authority.AvailabilityInfrastructureStamp,
                         CommunicationRevision = invocation.Traffic == TrafficClass.Communications ? _communicationPorts.Revision : null
                     };
-                _nextOutputLane = (lane + 1) % LaneCount;
+                _nextOutputLane = (lane + 1) % OutputLaneCount;
                 return true;
             }
             transportEvent = null;
@@ -274,6 +296,12 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             return Result(ApplyStatus.ResyncRequired, "resync_required");
         if (input.Epochs != _epochs)
             return Result(ApplyStatus.Rejected, "epoch_mismatch");
+        if (input.Command is ApplyWorld pluginWorld)
+        {
+            var normalized = _pluginRegistry.Normalize(pluginWorld.Entries, _core.MaxEntries);
+            if (normalized is null) return Result(ApplyStatus.Rejected, "invalid_runtime_input");
+            input = input with { Command = new ApplyWorld(normalized) };
+        }
         var fingerprint = RuntimeFingerprint.Compute(input, _core.MaxEntries);
         if (fingerprint is null)
             return Result(ApplyStatus.Rejected, "invalid_runtime_input");
@@ -331,6 +359,12 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             {
                 switch (input.Command)
                 {
+                    case RegisterStorage or RemoveStorage or SeedStorageFile or SubmitStorageOperation:
+                        admission = EnqueueStorage(input.Command);
+                        break;
+                    case SubmitCombatIntent or ConfigureActorCombat:
+                        admission = EnqueueCombat(input.Command);
+                        break;
                     case SubmitRequest submit:
                         admission = _transport!.Submit(submit.Request, SimulationTimeDs);
                         break;
@@ -345,6 +379,12 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                         break;
                     case CancelDiscovery cancel:
                         action = _discovery!.Cancel(cancel.Key);
+                        break;
+                    case WatchServices watch:
+                        admission = _serviceWatches?.Subscribe(watch.Request) ?? new(AdmissionStatus.Rejected, "unavailable", watch.Request.Key);
+                        break;
+                    case UnwatchServices unwatch:
+                        action = _serviceWatches?.Unsubscribe(unwatch.Key) ?? new(false, "unavailable");
                         break;
                     case QueryProjection projection:
                         admission = _projections!.Submit(projection.Request);
@@ -372,6 +412,21 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                         break;
                     case QueryAnchor query:
                         anchor = ResolveAnchor(query.Request);
+                        break;
+                    case QueryEntityNavigation navigation:
+                        admission = _entityNavigation!.Submit(navigation.Request);
+                        break;
+                    case CancelEntityNavigation cancel:
+                        action = _entityNavigation!.Cancel(cancel.Key);
+                        break;
+                    case SubmitEntityOperation entity:
+                        admission = EnqueueEntity(entity);
+                        break;
+                    case FinishEntityEffect finish:
+                        admission = _tasks!.Enqueue(finish.Key, new EntityWork(finish), EntityCommandFingerprint(finish)!);
+                        break;
+                    case SubmitModuleRequest module:
+                        admission = _tasks!.Enqueue(module.Request.Key, new EntityWork(module), ModuleRequestRules.Fingerprint(module.Request)!);
                         break;
                     case ConfigureBackbone backbone:
                         _availability.SetBackbone(backbone.Enabled);
@@ -473,6 +528,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                 continue;
             if (after is not null) IndexService(after);
             else if (before is not null) _directory.Remove(new(before.ServiceId, before.Generation));
+            _serviceWatches?.Observe(before, after);
             if (before?.Communication is not null)
             {
                 owners.Add(before.Owner);
@@ -547,6 +603,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             if (before == after)
                 continue;
             _authority.ObserveNodeChange(before, after);
+            _serviceWatches?.ObserveNode(before, after);
             if (after is null)
             {
                 if (before is not null)
@@ -666,7 +723,9 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         0 => _transport!.Advance(SimulationTimeDs, budget),
         1 => _discovery?.Advance(budget) ?? 0,
         2 => _projections?.Advance(budget) ?? 0,
-        _ => _graphSynchronization?.Advance(budget) ?? 0
+        3 => _graphSynchronization?.Advance(budget) ?? 0,
+        4 => _entityNavigation?.Advance(budget) ?? 0,
+        _ => AdvanceEntityTasks(budget)
     };
 
     /// <summary>Адаптирует read-only lookup page к общему event каналу без исполнения native handler.</summary>
@@ -688,6 +747,25 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             transportEvent = graphPage;
             return true;
         }
+        if (lane == 4 && _serviceWatches is not null && _serviceWatches.TryDequeueEvent(out var watchEvent))
+        {
+            transportEvent = watchEvent;
+            return true;
+        }
+        if (lane == 5 && _entityNavigation is not null && _entityNavigation.TryDequeueEvent(out var navigationPage))
+        {
+            transportEvent = navigationPage;
+            return true;
+        }
+        if (lane == 6 && _entities is not null && _entities.TryDequeueEvent(out transportEvent)) return true;
+        if (lane == 7 && _tasks is not null && _tasks.TryDequeueEvent(out var taskCompleted))
+        {
+            transportEvent = taskCompleted;
+            return true;
+        }
+        if (lane == 8 && _moduleEvents.TryDequeue(out transportEvent)) return true;
+        if (lane == 9 && _storageEvents.TryDequeue(out transportEvent)) return true;
+        if (lane == 10 && TryCombatEvent(out transportEvent)) return true;
         transportEvent = null;
         return false;
     }
@@ -695,6 +773,18 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     /// <summary>После потери binding незавершённые observations и retained pages освобождаются без replay в новую сессию.</summary>
     private void StopReadModels()
     {
+        try { _moduleSessions?.Dispose(); }
+        catch (PluginException failure) { LastPluginError = failure.Code; }
+        _moduleSessions = null;
+        _moduleEvents.Clear();
+        StopStorage();
+        StopCombat();
+        _tasks?.Dispose();
+        _tasks = null;
+        _entities?.Dispose();
+        _entities = null;
+        _entityNavigation?.Dispose();
+        _entityNavigation = null;
         _discovery?.Dispose();
         _discovery = null;
         _projections?.Dispose();
@@ -702,6 +792,8 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         _graphSynchronization?.Dispose();
         _graphSynchronization = null;
         _directory.Reset();
+        _serviceWatches?.Dispose();
+        _serviceWatches = null;
     }
 
     /// <summary>Проверяет lifetime и single-owner reentrancy до любых изменений.</summary>

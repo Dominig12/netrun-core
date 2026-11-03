@@ -95,9 +95,11 @@ internal static class StreamingConnection
         var readable = inputs.WaitToReadAsync(cancellationToken).AsTask();
         var pulse = Task.Delay(Pulse, cancellationToken);
         var monitored = monitoring ? session as IMonitoredHostSession : null;
+        var diagnostics = session as RuntimeHostSession;
         var lastMonitor = Stopwatch.GetTimestamp();
         void TryMonitor()
         {
+            diagnostics?.RecordDiagnostics(counters.Snapshot());
             if (monitored is null || Stopwatch.GetElapsedTime(lastMonitor) < MonitorInterval) return;
             lastMonitor = Stopwatch.GetTimestamp();
             var snapshot = counters.Snapshot();

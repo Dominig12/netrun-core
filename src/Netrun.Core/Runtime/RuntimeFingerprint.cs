@@ -4,6 +4,8 @@ using Netrun.Core.Routing;
 using Netrun.Core.Transport;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
+using Netrun.Core.Entities;
+using Netrun.Core.Plugins;
 
 namespace Netrun.Core.Runtime;
 
@@ -80,6 +82,21 @@ internal static class RuntimeFingerprint
                     if (request.Frequency is { } frequency) writer.Write(frequency);
                     writer.Write(request.MaxResults);
                     break;
+                case WatchServices watch when ServiceWatchBroker.IsValidRequest(watch.Request):
+                    writer.Write((byte)16);
+                    writer.Write(watch.Request.Key.ProducerId);
+                    writer.Write(watch.Request.Key.Sequence);
+                    writer.Write(watch.Request.Source.ServiceId);
+                    writer.Write(watch.Request.Source.Generation);
+                    writer.Write(watch.Request.Family);
+                    writer.Write(watch.Request.Tag is not null);
+                    if (watch.Request.Tag is { } watchedTag) writer.Write(watchedTag);
+                    break;
+                case UnwatchServices unwatch when TransportFingerprint.ValidKey(unwatch.Key):
+                    writer.Write((byte)17);
+                    writer.Write(unwatch.Key.ProducerId);
+                    writer.Write(unwatch.Key.Sequence);
+                    break;
                 case CancelDiscovery cancel when TransportFingerprint.ValidKey(cancel.Key):
                     writer.Write((byte)8);
                     writer.Write(cancel.Key.ProducerId);
@@ -125,6 +142,38 @@ internal static class RuntimeFingerprint
                     writer.Write((byte)15);
                     writer.Write(cancel.Key.ProducerId);
                     writer.Write(cancel.Key.Sequence);
+                    break;
+                case QueryEntityNavigation navigation:
+                    var navigationFingerprint = EntityNavigationBroker.Fingerprint(navigation.Request);
+                    if (navigationFingerprint is null) return null;
+                    writer.Write((byte)18);
+                    writer.Write(navigationFingerprint);
+                    break;
+                case CancelEntityNavigation cancel when TransportFingerprint.ValidKey(cancel.Key):
+                    writer.Write((byte)19);
+                    writer.Write(cancel.Key.ProducerId);
+                    writer.Write(cancel.Key.Sequence);
+                    break;
+                case SubmitEntityOperation or FinishEntityEffect:
+                    var entityFingerprint = NetworkRuntime.EntityCommandFingerprint(input.Command);
+                    if (entityFingerprint is null) return null;
+                    writer.Write((byte)20);
+                    writer.Write(entityFingerprint);
+                    break;
+                case SubmitModuleRequest module:
+                    var moduleFingerprint = ModuleRequestRules.Fingerprint(module.Request);
+                    if (moduleFingerprint is null) return null;
+                    writer.Write((byte)21); writer.Write(moduleFingerprint);
+                    break;
+                case RegisterStorage or RemoveStorage or SeedStorageFile or SubmitStorageOperation:
+                    var storageFingerprint = NetworkRuntime.StorageCommandFingerprint(input.Command);
+                    if (storageFingerprint is null) return null;
+                    writer.Write((byte)22); writer.Write(storageFingerprint);
+                    break;
+                case SubmitCombatIntent or ConfigureActorCombat:
+                    var combatFingerprint = NetworkRuntime.CombatCommandFingerprint(input.Command);
+                    if (combatFingerprint is null) return null;
+                    writer.Write((byte)23); writer.Write(combatFingerprint);
                     break;
                 default:
                     return null;

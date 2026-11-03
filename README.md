@@ -1,9 +1,10 @@
 # NETRUN Core
 
-Самостоятельная C# библиотека сетевой симуляции NETRUN и отдельный Host для BYOND.
-C# владеет производным графом, привязками APC, маршрутами, поиском сервисов,
-очередями и сетевыми задержками. DM экспортирует факты мира, проверяет игровые
-права и выполняет конечные действия машин.
+Самостоятельная C# библиотека NETRUN и отдельный Host для BYOND.
+Целевая граница — полное владение системой в Core: сущности, права, топология,
+файлы, хранилища, объекты и FIFO задачи, с расширениями/модами. DM передаёт факты
+и намерения, отображает проекции и выполняет native действия. Точные границы
+и оставшаяся интеграция станции описаны в [ownership](docs/ownership.md).
 
 Реализованы mirror узлов/секторов/сервисов, snapshot с catch-up, пространственная
 топология, routing и source trees, communications overlay, bounded transport,
@@ -54,6 +55,9 @@ dotnet run --project src/Netrun.Host -c Release --no-build -- replay-sync fixtur
 | `Transport` | Очереди, задержки, отмена, безопасное coalescing и invocation lifecycle |
 | `Discovery`, `Projection` | Асинхронные bounded выборки сервисов, графа и маршрутов |
 | `Runtime` | Последовательный владелец симуляции, логическое время и общий бюджет |
+| `Access`, `Entities` | Raw credential authority, registry процессов, navigation, combat и bot policy |
+| `Storage` | Принадлежащие Core файлы/носители, capabilities и атомарные операции |
+| `Scheduling`, `Plugins` | Общая FIFO очередь, явная загрузка DLL и изолированные mod sessions |
 | `Netrun.Protocol` | Строгая allowlist схема, framing и immutable payload codec |
 | `Netrun.Host` | Composition, локальная сессия, replay/ACK и автономные runners |
 | `native` | Неблокирующая транспортная граница BYOND |
@@ -62,7 +66,9 @@ dotnet run --project src/Netrun.Host -c Release --no-build -- replay-sync fixtur
 неявным bucket без квадратичной материализации clique. Изменение питания
 обновляет availability отдельно от геометрии. Новые обработчики узлов реализуют
 `NodeChangeHandler<TChange>`, стоимости маршрутов — `IRouteCostPolicy`.
-Binding поведение задаётся явной policy. XML-комментарии публичных методов и
+Binding поведение задаётся явной policy. Подключаемые расширения оформляются как
+плагины `INetrunPlugin` и задаются через `RuntimeOptions.Plugins` — см.
+[плагины](docs/plugins.md). XML-комментарии публичных методов и
 полей проверяются сборкой production проектов.
 
 Mutable runtime имеет одного последовательного владельца. Публикации графа и
@@ -73,6 +79,7 @@ Mutable runtime имеет одного последовательного вл�
 ## Документация
 
 - [Архитектура](docs/architecture.md) и [состояние реализации](docs/implementation-status.md).
+- [Плагины](docs/plugins.md) — расширение библиотеки политиками маршрутизации.
 - [Runtime протокол](docs/protocol-runtime.md), [базовая схема](docs/protocol.md)
   и [snapshot/catch-up](docs/synchronization.md).
 - [DM адаптер](docs/external-dm.md), [native мост](docs/native.md)

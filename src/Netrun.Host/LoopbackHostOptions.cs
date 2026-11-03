@@ -10,9 +10,9 @@ public sealed class LoopbackHostOptions
     private readonly byte[] _sessionToken;
     /// <summary>Только loopback TCP, выбранный явно; ноль разрешает ephemeral port в тестах.</summary>
     public int Port { get; }
-    /// <summary>Физический срок handshake; не двигает игровое время.</summary>
+    /// <summary>Опциональный физический срок handshake; default Infinite не ограничивает внешнюю обработку.</summary>
     public TimeSpan HandshakeTimeout { get; }
-    /// <summary>Физический срок отсутствия входного кадра; heartbeat может продлевать его при паузе мира.</summary>
+    /// <summary>Опциональный срок бездействия I/O; default Infinite отключает искусственный deadline.</summary>
     public TimeSpan IdleTimeout { get; }
     /// <summary>Предел retired binding history одной engine epoch; заполнение переводит Host в новую epoch.</summary>
     public int MaxRetiredBindings { get; }
@@ -26,9 +26,10 @@ public sealed class LoopbackHostOptions
         if (sessionToken is null || sessionToken.Length is < 32 or > 256 || sessionToken.Any(c => c is < '!' or > '~'))
             throw new ArgumentException("Invalid session token.", nameof(sessionToken));
         Port = port;
-        HandshakeTimeout = handshakeTimeout ?? TimeSpan.FromSeconds(5);
-        IdleTimeout = idleTimeout ?? TimeSpan.FromSeconds(30);
-        if (HandshakeTimeout <= TimeSpan.Zero || IdleTimeout <= TimeSpan.Zero)
+        HandshakeTimeout = handshakeTimeout ?? Timeout.InfiniteTimeSpan;
+        IdleTimeout = idleTimeout ?? Timeout.InfiniteTimeSpan;
+        if ((HandshakeTimeout != Timeout.InfiniteTimeSpan && HandshakeTimeout <= TimeSpan.Zero) ||
+            (IdleTimeout != Timeout.InfiniteTimeSpan && IdleTimeout <= TimeSpan.Zero))
             throw new ArgumentException("Invalid host timeouts.");
         if (maxRetiredBindings is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(maxRetiredBindings));

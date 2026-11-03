@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -34,9 +35,8 @@
 #endif
 
 namespace {
-/// Абсолютные лимиты ABI; конфигурация соединения может только уменьшить их.
+/// Размер отдельного wire frame и одной ABI-выдачи; очередь по умолчанию не имеет искусственной квоты.
 constexpr std::size_t MaxFrame = 1024 * 1024;
-constexpr std::size_t MaxQueued = 16 * MaxFrame;
 constexpr std::size_t MaxPoll = 8 * MaxFrame;
 constexpr std::size_t MaxFrames = 128;
 
@@ -488,20 +488,21 @@ bool start_worker(Connection* connection) {
 }
 } // namespace
 
-/// open(host,port,max_frames,max_queued_bytes,max_frame_bytes): только один loopback worker.
+/// open(host,port,max_frames,max_queued_bytes,max_frame_bytes): ноль отключает frame/byte квоты очередей.
 NETRUN_EXPORT char* netrun_open(unsigned int argc, char** argv) noexcept {
     try {
         std::string host, port, frames, bytes, frame;
         std::size_t p, f, b, m;
         if (argc != 5 || !argument(argc, argv, 0, 16, host) || host != "127.0.0.1" ||
             !argument(argc, argv, 1, 5, port) || !number(port, 1, 65535, p) ||
-            !argument(argc, argv, 2, 3, frames) || !number(frames, 1, MaxFrames, f) ||
-            !argument(argc, argv, 3, 8, bytes) || !number(bytes, MaxFrame, MaxQueued, b) ||
+            !argument(argc, argv, 2, 20, frames) || !number(frames, 0, std::numeric_limits<std::size_t>::max(), f) ||
+            !argument(argc, argv, 3, 20, bytes) || !number(bytes, 0, std::numeric_limits<std::size_t>::max(), b) || (b && b < MaxFrame) ||
             !argument(argc, argv, 4, 7, frame) || !number(frame, 1, MaxFrame, m)) return reply("invalid_arguments");
         Guard guard(manager().gate, false); if (!guard) return reply("would_block");
         if (manager().connection && (!manager().connection->exited.load(std::memory_order_acquire) || manager().state.load() != State::Closed))
             return reply("already_open");
-        manager().connection = std::make_unique<Connection>(static_cast<std::uint16_t>(p), f, b, m);
+        manager().connection = std::make_unique<Connection>(static_cast<std::uint16_t>(p),
+            f ? f : std::numeric_limits<std::size_t>::max(), b ? b : std::numeric_limits<std::size_t>::max(), m);
         manager().error.store(Error::None); manager().state.store(State::Connecting);
         if (!start_worker(manager().connection.get())) { manager().connection->exited.store(true); manager().state.store(State::Closed); return reply("worker_start_failed"); }
         return reply("accepted");

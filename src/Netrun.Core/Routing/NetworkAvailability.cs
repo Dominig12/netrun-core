@@ -19,7 +19,7 @@ public sealed class NetworkAvailability : INetworkAvailability
     public int Count => _nodes.Count;
 
     /// <summary>Создаёт независимый overlay; чтение исходного enumerable ограничено maxNodes.</summary>
-    public NetworkAvailability(IEnumerable<NodeFact>? nodes = null, bool backboneEnabled = true, int maxNodes = 10_000)
+    public NetworkAvailability(IEnumerable<NodeFact>? nodes = null, bool backboneEnabled = true, int maxNodes = int.MaxValue)
     {
         if (maxNodes < 1)
             throw new RoutingException("invalid_availability_options");

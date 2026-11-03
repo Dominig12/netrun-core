@@ -75,8 +75,10 @@ public sealed partial class NetworkTransport
     private readonly Dictionary<MergeKey, PendingRequest> _replaceable = [];
     /// <summary>Ordered admission отдельно для каждого экземпляра destination service.</summary>
     private readonly Dictionary<ServiceKey, LinkedList<PendingRequest>> _ordered = [];
-    /// <summary>Безвозвратно закрытые serials producer; не удаляются по TTL.</summary>
+    /// <summary>Закрытые serials producer; ноль резервирует blocked identity, не закрывая положительные serials.</summary>
     private readonly Dictionary<string, ulong> _watermarks = new(StringComparer.Ordinal);
+    /// <summary>Непринятый head не позволяет pipelined serial обойти retry и закрыть его watermark.</summary>
+    private readonly ProducerAdmissionFence _admission;
     /// <summary>Ограниченное окно завершений без повторного выполнения забытых ключей.</summary>
     private readonly Dictionary<RequestKey, History> _history = [];
     /// <summary>FIFO вытеснения terminal records за O(1).</summary>
@@ -102,7 +104,7 @@ public sealed partial class NetworkTransport
     public int EventCount => _events.Count;
     /// <summary>Количество terminal fingerprints в текущем окне.</summary>
     public int HistoryCount => _history.Count;
-    /// <summary>Количество producer watermarks за binding.</summary>
+    /// <summary>Количество зарегистрированных producers за binding, включая blocked identity с watermark ноль.</summary>
     public int ProducerCount => _watermarks.Count;
     /// <summary>Последняя принятая граница игрового времени в децисекундах.</summary>
     public int SimulationTimeDs { get; private set; }
@@ -124,6 +126,7 @@ public sealed partial class NetworkTransport
         _routes = routes;
         _communications = communications;
         _bindingEpoch = bindingEpoch;
+        _admission = new(_watermarks, _options.MaxProducers);
     }
 
     /// <summary>Возвращает текущее/недавнее состояние без выдачи mutable request или payload.</summary>
@@ -134,7 +137,7 @@ public sealed partial class NetworkTransport
     public TransportAdmission Submit(NetworkRequest request, int timeDs)
     {
         Enter();
-        try { return SubmitCore(request, timeDs); }
+        try { return _admission.Complete(SubmitCore(request, timeDs)); }
         finally { _busy = false; }
     }
 
@@ -165,7 +168,7 @@ public sealed partial class NetworkTransport
         try
         {
             // Dirty topology не блокирует все уже готовые terminal за ожидающим invocation.
-            var scan = Math.Min(_events.Count + 1, 64);
+            var scan = (long)_events.Count + 1;
             while (scan-- > 0 && _events.TryDequeue(out var candidate))
             {
                 if (candidate is not ServiceInvocation invocation) { transportEvent = candidate; return true; }
@@ -203,6 +206,7 @@ public sealed partial class NetworkTransport
         {
             if (!SetTime(timeDs)) return new(false, "time_regression");
             if (!TransportFingerprint.ValidKey(key)) return new(false, "invalid_key");
+            _admission.Release(key);
             if (!_active.TryGetValue(key, out var item)) return new(false, "request_unknown");
             if (item.State != RequestState.Queued) return new(false, "too_late");
             if (_events.Count == _options.MaxEvents) return new(false, "would_block", true);
@@ -220,6 +224,7 @@ public sealed partial class NetworkTransport
         {
             if (!SetTime(timeDs)) return new(false, "time_regression");
             _unavailable = true;
+            _admission.Clear();
             var retained = _events.Where(item => item is not ServiceInvocation).ToArray();
             _events.Clear();
             foreach (var item in retained) _events.Enqueue(item);
@@ -252,6 +257,7 @@ public sealed partial class NetworkTransport
             return Same(history.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, history.Code, request.Key, history.State, history.CoalescedInto) : new(AdmissionStatus.Rejected, "request_conflict", request.Key);
         if (_watermarks.TryGetValue(request.Key.ProducerId, out var watermark) && request.Key.Sequence <= watermark)
             return new(AdmissionStatus.Rejected, "request_expired", request.Key);
+        if (_admission.Blocks(request.Key)) return new(AdmissionStatus.WouldBlock, "producer_backpressure", request.Key);
         if (_unavailable) return new(AdmissionStatus.Rejected, "unavailable", request.Key);
         if (!_watermarks.ContainsKey(request.Key.ProducerId) && _watermarks.Count == _options.MaxProducers)
             return new(AdmissionStatus.WouldBlock, "producer_capacity", request.Key);

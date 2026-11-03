@@ -52,6 +52,82 @@ DM собирает только готовый FIFO prefix с общим пре
 machine control/request очереди чередуются, поэтому поток invocation results не
 может бесконечно откладывать подтверждение GraphSync. В VV доступны negotiated
 `max_input_commands`, `sent_input_batches` и `sent_batched_commands`.
+Continue persistent stream занимает место после первых 15 ожидающих lookups
+в negotiated burst; с одиночным Host — после одного lookup. Новые query IDs
+остаются в FIFO, а продолжение уже принятого ID не ждёт весь discovery backlog
+на каждой странице snapshot.
+
+## Непрерывный duplex обмен
+
+Клиент выбирает новый режим полем `"duplex": true` в authenticated `hello`.
+Host подтверждает `hello_ack.duplex: true`, `max_inflight_frames: 0` и
+`max_graph_pages: 0`. Ноль отключает application credit windows по умолчанию;
+положительные значения `StreamingHostLimits` включают квоты явно.
+Legacy-клиенты без этого поля продолжают прежний request/reply протокол.
+Duplex требует поддержки обоих peers: Host с неподходящей session factory
+отвечает `duplex_unsupported`, а DM проверяет подтверждённую capability.
+
+Socket reader, единственный runtime owner и socket writer разделены независимыми
+каналами без count quotas по умолчанию. Owner применяет входы последовательно, сохраняя
+порядок TCP, logical sequences и причинность. Он также продвигает готовую работу
+и отправляет непустые output frames без нового poll или logical input.
+Физический pulse 25 ms не двигает `simulation_time_ds`: игровые due/deadlines
+меняются только новым входом BYOND. Для каждого destination service сохраняется
+его `ordered` контракт; ожидание одного native result не блокирует другой сервис.
+
+Отправитель не ожидает ACK прежнего input перед постановкой следующего. Группа
+`input_batch` по-прежнему содержит до 16 independently
+sequenced команд. Header `ack_output_sequence` каждого входа подтверждает уже
+обработанные DM выходы. После одних лишь push outputs DM отправляет
+`poll` с `max_events: 0`: этот кадр только освобождает journal и **не получает
+ответного пустого output**. Поэтому ACK не порождает бесконечную цепочку ACK.
+
+Push продолжает отправку готовых событий без ожидания прежнего ACK. Duplex
+journal удерживает отправленные bodies до cumulative ACK без искусственной
+frame/byte quota по умолчанию. Положительные soft quotas включаются явно и
+резервируют место для input replies. Legacy journal сохраняет прежние ограничения.
+При явно включённом input window его превышение, future ACK или нарушенный sequence закрывает binding.
+Reader/owner/writer отменяются вместе до освобождения runtime, включая случай,
+когда peer перестал читать и TCP writer остановился на backpressure.
+
+В duplex output присутствует компактный `host_metrics`: `input_unacked`,
+`output_unacked`, `received_messages`, `push_outputs`, `apply_us`, `pump_us`,
+`max_apply_us`, `max_pump_us`, `processing_us`, `max_processing_us`.
+`apply_us` измеряет текущий runtime admission, `pump_us` — отдельный Core Pump.
+Время подготовки output включает decode/admission/Pump/event serialization до
+сериализации его header/metrics; ожидание TCP не включено. Статистика числовая,
+не используется как identity или ACK и не сканирует живые native объекты.
+
+Соседние world-fact inputs объединяются encoding-группами до восьми кадров:
+один Pump публикует итоговый граф, затем все `runtime_result` этой группы
+передаются **до** её native events. Перед зависимой командой facts обязательно
+flush/publish. Это не временная квота: следующая готовая группа обрабатывается
+сразу. `host_metrics.coalesced_fact_frames` показывает число объединений.
+
+GraphSync в duplex производит последовательные страницы без ожидания ACK
+каждой страницы. Continue подтверждает cumulative fully-applied page prefix;
+новый graph batch начинается после ACK конца предыдущего. Legacy page window
+равно одному. Размеры wire frame (1 MiB), command group (16), world batch (128),
+graph page (32 rows) и discovery page (64 keys) задают сегментацию данных.
+Они не ограничивают суммарную очередь или число последовательно отправляемых
+кадров. Cache/history eviction сохраняет управление lifetime/replay и не
+останавливает admission новых заданий.
+
+DM раздельно обслуживает receive, отправку и native execution cooperative pumps.
+JSON decoder только валидирует invocation и резервирует ownership; игровой
+`receive` выполняется отдельной очередью. В очереди хранятся invocation IDs,
+а proof содержит только scalars. Отмена и disconnect освобождают queued refs;
+уже исполняемый callback владеет message до возврата. Внешние refs очищаются до
+удаления контекстов. `first_attempt_sequence` сохраняет порядок retries между
+кадрами; producer admission fence не даёт новому serial обогнать WouldBlock head.
+
+Work/active/query/event quotas Core по умолчанию используют машинный maximum,
+не выделяя массивов такого размера заранее. DM work/context/journal quotas и
+queue quotas native bridge используют `0` как отсутствие ограничения. В
+`netrun_open` ноль разрешён для количества кадров и суммарных bytes очереди.
+Физические Host timeouts по умолчанию Infinite, DM deadlines — 0; явные
+finite настройки доступны для дальнейших измерений. Socket EOF/error по-прежнему
+закрывает binding после обработки уже полученных полных выходных кадров.
 
 ## Discovery
 

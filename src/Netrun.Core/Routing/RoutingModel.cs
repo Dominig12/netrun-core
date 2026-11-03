@@ -61,7 +61,7 @@ public interface IRouteProvider
 /// <param name="CacheCapacity">Максимум положительных и отрицательных записей вместе; ноль отключает LRU.</param>
 /// <param name="MaxNodes">Максимальное число узлов переданного GraphSnapshot.</param>
 /// <param name="MaxQueueEntries">Максимум одновременно ожидающих PriorityQueue candidates.</param>
-public sealed record RouterOptions(int CacheCapacity = 1024, int MaxNodes = 10_000, int MaxQueueEntries = 100_000);
+public sealed record RouterOptions(int CacheCapacity = 1024, int MaxNodes = int.MaxValue, int MaxQueueEntries = int.MaxValue);
 
 /// <summary>Ошибка конфигурации, стоимости или ограничений поиска с безопасной диагностикой.</summary>
 /// <param name="code">Стабильный код причины без входного содержимого.</param>
@@ -96,7 +96,7 @@ public sealed class RouteResult
     /// <param name="availabilityVersion">Версия использованного overlay.</param>
     /// <param name="maxPathLength">Локальный предел копии, 1..10000 узлов.</param>
     public static RouteResult Create(RouteStatus status, IEnumerable<NodeKey> path, double latencyDs,
-        ulong graphVersion, ulong availabilityVersion, int maxPathLength = 10_000)
+        ulong graphVersion, ulong availabilityVersion, int maxPathLength = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(path);
         if (!Enum.IsDefined(status) || !double.IsFinite(latencyDs) || latencyDs < 0 || maxPathLength is < 1 or > 10_000)

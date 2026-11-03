@@ -245,7 +245,7 @@ public static class RuntimeJson
                 if (!communications && requestedFrequency is not null) throw Schema();
                 return new DiscoverServices(new DiscoveryRequest(RequestId(entry.GetProperty("request_id")), ReadService(entry.GetProperty("source")),
                     Text(entry.GetProperty("destination_family"), 128), NullableText(entry.GetProperty("recipient_tag"), 256), communications,
-                    requestedFrequency, Integer(entry.GetProperty("max_results"), 1, 4096)));
+                    requestedFrequency, Integer(entry.GetProperty("max_results"), 1, int.MaxValue)));
             case "service_discovery_cancel":
                 Fields(entry, "kind", "request_id");
                 return new CancelDiscovery(RequestId(entry.GetProperty("request_id")));
@@ -371,7 +371,7 @@ public static class RuntimeJson
                 ValidateService(discover.Source);
                 ValidateText(discover.DestinationFamily, 128);
                 ValidateOptionalText(discover.RecipientTag, 256);
-                if (discover.MaxResults is < 1 or > 4096 || discover.Frequency is <= 0 ||
+                if (discover.MaxResults < 1 || discover.Frequency is <= 0 ||
                     !discover.Communications && discover.Frequency is not null) throw Schema();
                 break;
             case CancelDiscovery cancel: ValidateRequestKey(cancel.Key); break;

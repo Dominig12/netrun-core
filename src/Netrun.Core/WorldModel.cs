@@ -77,5 +77,5 @@ public sealed record ApplyResult(ApplyStatus Status, string Code, ulong AppliedS
 /// <param name="MaxSnapshotChunks">Предельное число chunks одного снимка, включая пустые.</param>
 /// <param name="MaxTrackedSectors">Лимит определений секторов вместе с tombstones.</param>
 /// <param name="MaxTrackedServices">Лимит экземпляров сервисов вместе с tombstones.</param>
-public sealed record CoreLimits(int MaxEntries = 128, int MaxTrackedNodes = 10_000, int ReplayWindow = 64,
-    int MaxSnapshotChunks = 10_000, int MaxTrackedSectors = 4096, int MaxTrackedServices = 20_000);
+public sealed record CoreLimits(int MaxEntries = 128, int MaxTrackedNodes = int.MaxValue, int ReplayWindow = 64,
+    int MaxSnapshotChunks = int.MaxValue, int MaxTrackedSectors = int.MaxValue, int MaxTrackedServices = int.MaxValue);

@@ -76,6 +76,8 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private bool _busy;
     /// <summary>Явный lifetime освобождает staging hash и транспортные payload.</summary>
     private bool _disposed;
+    /// <summary>Standalone использует options; streaming Host откладывает structural Build до bounded input group.</summary>
+    private bool _deferTopologyBuild;
 
     /// <inheritdoc />
     public IReadOnlyDictionary<string, NodeFact> Nodes => _synchronization.Nodes;
@@ -117,6 +119,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     {
         _epochs = epochs;
         _options = options ?? new RuntimeOptions();
+        _deferTopologyBuild = _options.DeferTopologyBuild;
         _core = _options.Core ?? new CoreLimits();
         if (_options.PumpWorkBudget < 1)
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -151,6 +154,26 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
 
     /// <summary>Выполняет заданный default budget, не меняя логическое время.</summary>
     public int Pump() => Pump(_options.PumpWorkBudget);
+
+    /// <summary>Выбирает bounded graph page credits до Start; применяется при согласовании duplex Host.</summary>
+    public void ConfigureGraphSynchronizationWindow(int maximumPages)
+    {
+        Enter();
+        try { _graphSynchronization!.ConfigurePageWindow(maximumPages); }
+        finally { _busy = false; }
+    }
+
+    /// <summary>Включает coalesced structural publication до первого input, сохраняя legacy Apply semantics по умолчанию.</summary>
+    public void EnableDeferredTopologyBuild()
+    {
+        Enter();
+        try
+        {
+            if (AppliedSequence != 0) throw new InvalidOperationException("Topology deferral must be selected before processing input.");
+            _deferTopologyBuild = true;
+        }
+        finally { _busy = false; }
+    }
 
     /// <summary>
     /// Публикует максимум один coalesced graph, затем делит общий workBudget между transport, lookup и UI projection.
@@ -300,7 +323,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                     UpdateWorldEffects(oldNodes, oldSectors);
                 if (priorState == MirrorSyncState.Ready)
                     UpdateServiceIndexes(oldServices, oldNodes);
-                if (!_options.DeferTopologyBuild)
+                if (!_deferTopologyBuild)
                     TryBuildTopology();
                 error = TopologyError;
             }

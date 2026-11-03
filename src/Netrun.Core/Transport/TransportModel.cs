@@ -154,5 +154,5 @@ public sealed record InvocationResult(string BindingEpoch, string InvocationId, 
 /// <param name="MaxProducers">Максимум producer watermarks за binding; они не вытесняются по TTL.</param>
 /// <param name="TickLagDs">Минимальный представимый native tick; меньшие transit задержки становятся нулевыми.</param>
 /// <param name="OrdinaryWeight">Максимум ordinary due-работ подряд при готовой background-работе.</param>
-public sealed record TransportOptions(int MaxActive = 2048, int MaxEvents = 4096, int HistoryCapacity = 4096,
-    int MaxProducers = 128, double TickLagDs = 1, int OrdinaryWeight = 8);
+public sealed record TransportOptions(int MaxActive = int.MaxValue, int MaxEvents = int.MaxValue, int HistoryCapacity = 4096,
+    int MaxProducers = int.MaxValue, double TickLagDs = 1, int OrdinaryWeight = 8);

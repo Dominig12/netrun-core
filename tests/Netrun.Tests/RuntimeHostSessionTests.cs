@@ -110,6 +110,311 @@ public sealed class RuntimeHostSessionTests
     /// <summary>Типизированное обращение к реальному объявленному тестовому сервису.</summary>
     private static NetworkRequest Request() => new(new("peer", 1), new("source", 1), new("target", 1), "read", Payload());
 
+    /// <summary>Конечные quotas включаются явно только в проверках credit/backpressure.</summary>
+    private static StreamingHostLimits FiniteStreaming => new(8, 8, 8, 8, 4);
+
+    /// <summary>Duplex принимает входное окно до чтения ответов и отправляет оставшиеся страницы без poll-запросов.</summary>
+    [Fact]
+    public async Task DuplexPipelinesInputsAndPushesProjectionWithBoundedCreditsAndNoAckLoop()
+    {
+        await using var host = new LoopbackHost(new(0, Token), new RuntimeHostSessionFactory(new(Projection: new(PageRows: 1)), FiniteStreaming));
+        using var stop = new CancellationTokenSource();
+        var run = host.RunAsync(stop.Token);
+        try
+        {
+            using var client = new TcpClient { NoDelay = true };
+            await client.ConnectAsync(IPAddress.Loopback, host.Port);
+            var stream = client.GetStream();
+            await FramedStream.WriteAsync(stream, JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                kind = "hello",
+                protocol_major = 1,
+                protocol_minor = 3,
+                world_epoch = "duplex-world",
+                binding_epoch = "duplex-binding",
+                token = Token,
+                duplex = true
+            }));
+            using var hello = JsonDocument.Parse(await ReadFrame(stream));
+            Assert.True(hello.RootElement.GetProperty("duplex").GetBoolean());
+            Assert.Equal(8, hello.RootElement.GetProperty("max_inflight_frames").GetInt32());
+            var epochs = new Epochs("duplex-world", hello.RootElement.GetProperty("engine_epoch").GetString()!, "duplex-binding");
+            var peer = new Peer(epochs, async body => { await FramedStream.WriteAsync(stream, body); return await ReadFrame(stream); });
+            await peer.Synchronize(3, extraNodes: 64);
+            var firstSequence = peer.Sequence + 1;
+            var first = RuntimeJson.Encode(new(epochs, firstSequence, 0,
+                new QueryProjection(new(new("ui", 1), ProjectionKind.Routes, new("source-node", 1)))), peer.Ack);
+            // Both are sent before the peer reads even the first application ACK.
+            await FramedStream.WriteAsync(stream, first);
+            await FramedStream.WriteAsync(stream, RuntimeJson.Encode(new(epochs, firstSequence + 1, 0, new ConfigureBackbone(true)), peer.Ack));
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var correlated = new HashSet<ulong>();
+            ulong ack = peer.Ack;
+            var complete = false;
+            void Observe(byte[] body)
+            {
+                using var document = JsonDocument.Parse(body);
+                var root = document.RootElement;
+                Assert.Equal(ack + 1, Counter(root, "output_sequence"));
+                ack++;
+                var entries = root.GetProperty("results").EnumerateArray().ToArray();
+                Assert.InRange(entries.Count(entry => entry.GetProperty("kind").GetString() != "runtime_result"), 0, 8);
+                foreach (var entry in entries)
+                {
+                    if (entry.GetProperty("kind").GetString() == "runtime_result")
+                        Assert.True(correlated.Add(Counter(entry, "input_sequence")));
+                    if (entry.GetProperty("kind").GetString() != "projection_page") continue;
+                    Assert.False(complete);
+                    foreach (var row in entry.GetProperty("rows").EnumerateArray())
+                        Assert.True(seen.Add(row.GetProperty("node").GetProperty("node_id").GetString()!));
+                    complete = entry.GetProperty("complete").GetBoolean();
+                }
+            }
+            // Eight total outstanding outputs exhaust push credit; the remaining page stays owned by the runtime.
+            for (var i = 0; i < 8; i++) Observe(await ReadFrame(stream));
+            Assert.Equal(new[] { firstSequence, firstSequence + 1 }, correlated.Order());
+            Assert.Equal(64, seen.Count);
+            Assert.False(complete);
+            await Task.Delay(100);
+            Assert.False(stream.DataAvailable);
+            await FramedStream.WriteAsync(stream, RuntimeJson.EncodePoll(epochs, ack, 0));
+            Observe(await ReadFrame(stream));
+            Assert.True(complete);
+            Assert.Equal(66, seen.Count);
+            await FramedStream.WriteAsync(stream, RuntimeJson.EncodePoll(epochs, ack, 0));
+            await Task.Delay(100);
+            Assert.False(stream.DataAvailable); // ACK-only does not create an output that itself needs another ACK.
+            await FramedStream.WriteAsync(stream, first);
+            using var duplicate = JsonDocument.Parse(await ReadFrame(stream));
+            var replayed = Entry(duplicate, "runtime_result");
+            Assert.Equal("duplicate", replayed.GetProperty("status").GetString());
+            Assert.Equal(firstSequence, Counter(replayed, "input_sequence"));
+            Assert.Single(duplicate.RootElement.GetProperty("results").EnumerateArray());
+        }
+        finally { stop.Cancel(); await run; }
+    }
+
+    /// <summary>Окно input replies независимо от push credits; ACK-only работает даже при полном input window.</summary>
+    [Fact]
+    public async Task DuplexInputWindowIsBoundedAndAckOnlyReleasesItWithoutAnOutput()
+    {
+        using var session = new RuntimeHostSession(Epochs, streamingLimits: FiniteStreaming);
+        session.EnableStreaming();
+        var peer = DirectPeer(session);
+        await peer.Synchronize();
+        var acknowledged = peer.Ack;
+        ulong lastOutput = 0;
+        for (ulong index = 1; index <= 8; index++)
+        {
+            using var output = JsonDocument.Parse((await session.ProcessStreamingAsync(RuntimeJson.Encode(
+                new(Epochs, peer.Sequence + index, 0, new ConfigureBackbone(true)), acknowledged), CancellationToken.None))!);
+            lastOutput = Counter(output.RootElement, "output_sequence");
+        }
+        var next = new RuntimeInput(Epochs, peer.Sequence + 9, 0, new ConfigureBackbone(false));
+        var pressure = await Assert.ThrowsAsync<ProtocolException>(async () =>
+            await session.ProcessStreamingAsync(RuntimeJson.Encode(next, acknowledged), CancellationToken.None));
+        Assert.Equal("input_window_exceeded", pressure.Code);
+        Assert.Null(await session.ProcessStreamingAsync(RuntimeJson.EncodePoll(Epochs, lastOutput, 0), CancellationToken.None));
+        Assert.Null(session.TryProduceOutput());
+        using var accepted = JsonDocument.Parse((await session.ProcessStreamingAsync(RuntimeJson.Encode(next, lastOutput), CancellationToken.None))!);
+        Assert.Equal(next.Sequence, Counter(accepted.RootElement, "applied_sequence"));
+        Assert.Equal(lastOutput + 1, Counter(accepted.RootElement, "output_sequence"));
+    }
+
+    /// <summary>Два structural fact frames публикуют один graph; собственные input diagnostics идут до любых событий.</summary>
+    [Fact]
+    public async Task DuplexFactGroupPublishesOneGraphForConsecutiveStructuralFrames()
+    {
+        using var session = new RuntimeHostSession(Epochs);
+        session.EnableStreaming();
+        var peer = new Peer(Epochs, async body => (await session.ProcessStreamingAsync(body, CancellationToken.None))!);
+        using var initial = JsonDocument.Parse(await peer.Synchronize());
+        var version = Counter(Entry(initial, "runtime_result"), "graph_version");
+        RuntimeInput Fact(ulong sequence, ulong revision, int x) => new(Epochs, sequence, 0, new ApplyWorld([
+            new NodeUpsert(new("target-node", 1, revision, new("B", "server", new(x, 1, 1), "s", true, new("home", "home"))))]));
+        var first = Fact(peer.Sequence + 1, 2, 3);
+        var second = Fact(peer.Sequence + 2, 3, 4);
+        var outputs = await session.ProcessStreamingBatchAsync([
+            RuntimeJson.Encode(first, peer.Ack), RuntimeJson.Encode(second, peer.Ack)], CancellationToken.None);
+        using var grouped = JsonDocument.Parse(Assert.Single(outputs));
+        var entries = grouped.RootElement.GetProperty("results").EnumerateArray().ToArray();
+        Assert.Equal(2, entries.Length);
+        Assert.All(entries, entry =>
+        {
+            Assert.Equal("runtime_result", entry.GetProperty("kind").GetString());
+            Assert.Equal(version + 1, Counter(entry, "graph_version"));
+            Assert.Equal(second.Sequence, Counter(entry, "graph_input_sequence"));
+            Assert.False(entry.GetProperty("topology_pending").GetBoolean());
+        });
+        Assert.Equal(first.Sequence, Counter(entries[0], "input_sequence"));
+        Assert.Equal(second.Sequence, Counter(entries[1], "input_sequence"));
+        Assert.Equal(1UL, grouped.RootElement.GetProperty("host_metrics").GetProperty("coalesced_fact_frames").GetUInt64());
+    }
+
+    /// <summary>Между facts и зависимой командой стоит publication barrier; следующий fact не меняет captured route.</summary>
+    [Fact]
+    public async Task DuplexFactGroupFlushesBeforeDependentRouteCommand()
+    {
+        using var session = new RuntimeHostSession(Epochs);
+        session.EnableStreaming();
+        var peer = new Peer(Epochs, async body => (await session.ProcessStreamingAsync(body, CancellationToken.None))!);
+        using var initial = JsonDocument.Parse(await peer.Synchronize());
+        var version = Counter(Entry(initial, "runtime_result"), "graph_version");
+        RuntimeInput Fact(ulong sequence, ulong revision, int x) => new(Epochs, sequence, 0, new ApplyWorld([
+            new NodeUpsert(new("target-node", 1, revision, new("B", "server", new(x, 1, 1), "s", true, new("home", "home"))))]));
+        var outputs = await session.ProcessStreamingBatchAsync([
+            RuntimeJson.Encode(Fact(peer.Sequence + 1, 2, 3), peer.Ack),
+            RuntimeJson.Encode(new(Epochs, peer.Sequence + 2, 0, new QueryRoute(new("source-node", 1), new("target-node", 1), Netrun.Core.Routing.RouteKind.Machine)), peer.Ack),
+            RuntimeJson.Encode(Fact(peer.Sequence + 3, 3, 4), peer.Ack)], CancellationToken.None);
+        Assert.Equal(3, outputs.Count);
+        using var command = JsonDocument.Parse(outputs[1]);
+        var result = Entry(command, "runtime_result");
+        Assert.Equal(version + 1, Counter(result, "graph_version"));
+        Assert.Equal(version + 1, Counter(result.GetProperty("route"), "graph_version"));
+        Assert.Equal("found", result.GetProperty("route").GetProperty("status").GetString());
+        using var final = JsonDocument.Parse(outputs[2]);
+        Assert.Equal(version + 2, Counter(Entry(final, "runtime_result"), "graph_version"));
+    }
+
+    /// <summary>Один shared output ACK освобождает все восемь wire inputs, а не один случайный slot группы.</summary>
+    [Fact]
+    public async Task DuplexFactGroupAcknowledgementReleasesEveryInputCredit()
+    {
+        using var session = new RuntimeHostSession(Epochs, streamingLimits: FiniteStreaming);
+        session.EnableStreaming();
+        var peer = new Peer(Epochs, async body => (await session.ProcessStreamingAsync(body, CancellationToken.None))!);
+        await peer.Synchronize();
+        var inputs = Enumerable.Range(1, 8).Select(index => (ReadOnlyMemory<byte>)RuntimeJson.Encode(
+            new(Epochs, peer.Sequence + (ulong)index, 0, new ApplyWorld([])), peer.Ack)).ToArray();
+        var outputs = await session.ProcessStreamingBatchAsync(inputs, CancellationToken.None);
+        using var group = JsonDocument.Parse(Assert.Single(outputs));
+        var ack = Counter(group.RootElement, "output_sequence");
+        Assert.Equal(8, group.RootElement.GetProperty("results").GetArrayLength());
+        Assert.Equal(8, group.RootElement.GetProperty("host_metrics").GetProperty("input_unacked").GetInt32());
+        var next = new RuntimeInput(Epochs, peer.Sequence + 9, 0, new ConfigureBackbone(true));
+        var pressure = await Assert.ThrowsAsync<ProtocolException>(async () =>
+            await session.ProcessStreamingAsync(RuntimeJson.Encode(next, peer.Ack), CancellationToken.None));
+        Assert.Equal("input_window_exceeded", pressure.Code);
+        Assert.Null(await session.ProcessStreamingAsync(RuntimeJson.EncodePoll(Epochs, ack, 0), CancellationToken.None));
+        using var accepted = JsonDocument.Parse((await session.ProcessStreamingAsync(RuntimeJson.Encode(next, ack), CancellationToken.None))!);
+        Assert.Equal(next.Sequence, Counter(accepted.RootElement, "applied_sequence"));
+        Assert.Equal(1, accepted.RootElement.GetProperty("host_metrics").GetProperty("input_unacked").GetInt32());
+    }
+
+    /// <summary>Default duplex продолжает принимать input groups без ожидания прежних ACK.</summary>
+    [Fact]
+    public async Task DuplexDefaultHasNoApplicationInputWindow()
+    {
+        using var session = new RuntimeHostSession(Epochs);
+        session.EnableStreaming();
+        var peer = new Peer(Epochs, async body => (await session.ProcessStreamingAsync(body, CancellationToken.None))!);
+        await peer.Synchronize();
+        for (var groupIndex = 0; groupIndex < 2; groupIndex++)
+        {
+            var bodies = Enumerable.Range(1, 8).Select(index => (ReadOnlyMemory<byte>)RuntimeJson.Encode(
+                new(Epochs, peer.Sequence + (ulong)(8 * groupIndex + index), 0, new ApplyWorld([])), peer.Ack)).ToArray();
+            var outputs = await session.ProcessStreamingBatchAsync(bodies, CancellationToken.None);
+            using var output = JsonDocument.Parse(Assert.Single(outputs));
+            Assert.Equal(8 * (groupIndex + 1), output.RootElement.GetProperty("host_metrics").GetProperty("input_unacked").GetInt32());
+        }
+        Assert.Equal(0, session.Limits.MaximumInflightFrames);
+        Assert.Equal(0, session.Limits.MaximumUnacknowledgedOutputs);
+        Assert.Equal(0, session.Limits.QueueCapacity);
+        Assert.Equal(0, session.Limits.MaximumEventsPerOutput);
+        Assert.Equal(0, session.Limits.GraphPageWindow);
+    }
+
+    /// <summary>Ожидание результата одного ordered destination не блокирует другой экземпляр сервиса.</summary>
+    [Fact]
+    public async Task DuplexCorrelatesIndependentServicesWhileAnotherDestinationAwaitsItsNativeResult()
+    {
+        await using var host = new LoopbackHost(new(0, Token), new RuntimeHostSessionFactory());
+        using var stop = new CancellationTokenSource();
+        var run = host.RunAsync(stop.Token);
+        try
+        {
+            using var client = new TcpClient { NoDelay = true };
+            await client.ConnectAsync(IPAddress.Loopback, host.Port);
+            var stream = client.GetStream();
+            await FramedStream.WriteAsync(stream, JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                kind = "hello",
+                protocol_major = 1,
+                protocol_minor = 3,
+                world_epoch = "instances-world",
+                binding_epoch = "instances-binding",
+                token = Token,
+                duplex = true
+            }));
+            using var hello = JsonDocument.Parse(await ReadFrame(stream));
+            var epochs = new Epochs("instances-world", hello.RootElement.GetProperty("engine_epoch").GetString()!, "instances-binding");
+            var peer = new Peer(epochs, async body => { await FramedStream.WriteAsync(stream, body); return await ReadFrame(stream); });
+            await peer.Synchronize(3, extraNodes: 1);
+            await peer.Send(new ApplyWorld([new ServiceUpsert(new("other-target", 1, 1, new("extra-000", 1), "test.target", "C", true,
+                new([new("read", OperationSafety.ReadOnly)], 64)))]));
+            var firstSequence = peer.Sequence + 1;
+            for (var i = 1; i <= 3; i++)
+            {
+                var request = Request() with { Key = new("instances", (ulong)i), Destination = new(i == 3 ? "other-target" : "target", 1) };
+                await FramedStream.WriteAsync(stream, RuntimeJson.Encode(new(epochs, firstSequence + (ulong)i - 1, 0, new SubmitRequest(request)), peer.Ack));
+            }
+            var invoked = new Dictionary<string, string>();
+            var admitted = new HashSet<ulong>();
+            ulong ack = peer.Ack;
+            void Observe(byte[] body)
+            {
+                using var document = JsonDocument.Parse(body);
+                ack = Counter(document.RootElement, "output_sequence");
+                foreach (var entry in document.RootElement.GetProperty("results").EnumerateArray())
+                {
+                    if (entry.GetProperty("kind").GetString() == "runtime_result") admitted.Add(Counter(entry, "input_sequence"));
+                    if (entry.GetProperty("kind").GetString() == "service_invocation")
+                        Assert.True(invoked.TryAdd(entry.GetProperty("request_id").GetString()!, entry.GetProperty("invocation_id").GetString()!));
+                }
+            }
+            for (var i = 0; i < 3; i++) Observe(await ReadFrame(stream));
+            Assert.Equal(3, admitted.Count);
+            Assert.True(invoked.ContainsKey("instances:1"));
+            Assert.True(invoked.ContainsKey("instances:3"));
+            Assert.False(invoked.ContainsKey("instances:2"));
+            await FramedStream.WriteAsync(stream, RuntimeJson.Encode(new(epochs, firstSequence + 3, 0,
+                new FinishInvocation(new(epochs.Binding, invoked["instances:1"], true))), ack));
+            Observe(await ReadFrame(stream));
+            Assert.True(invoked.ContainsKey("instances:2"));
+            Assert.Equal(3, invoked.Count);
+            // Every instance has a distinct terminal request identity even when results are sent together.
+            var finishes = new[] { "instances:2", "instances:3" }.Select((key, index) => new RuntimeInput(epochs,
+                firstSequence + 4 + (ulong)index, 0, new FinishInvocation(new(epochs.Binding, invoked[key], true)))).ToArray();
+            await FramedStream.WriteAsync(stream, RuntimeJson.EncodeBatch(finishes, ack));
+            using var completed = JsonDocument.Parse(await ReadFrame(stream));
+            Assert.Equal(new[] { "instances:2", "instances:3" }, completed.RootElement.GetProperty("results").EnumerateArray()
+                .Where(entry => entry.GetProperty("kind").GetString() == "request_completed")
+                .Select(entry => entry.GetProperty("request_id").GetString()).Order());
+        }
+        finally { stop.Cancel(); await run; }
+    }
+
+    /// <summary>Физические pulses не исполняют future native delivery; simulation time поступает только от BYOND.</summary>
+    [Fact]
+    public async Task DuplexPushDoesNotAdvanceSimulationTime()
+    {
+        using var session = new RuntimeHostSession(Epochs);
+        session.EnableStreaming();
+        var peer = DirectPeer(session);
+        await peer.Synchronize(targetX: 1501);
+        using var submitted = JsonDocument.Parse((await session.ProcessStreamingAsync(RuntimeJson.Encode(
+            new(Epochs, peer.Sequence + 1, 0, new SubmitRequest(Request())), peer.Ack), CancellationToken.None))!);
+        Assert.DoesNotContain(submitted.RootElement.GetProperty("results").EnumerateArray(), entry => entry.GetProperty("kind").GetString() == "service_invocation");
+        for (var i = 0; i < 4; i++)
+        {
+            await Task.Delay(25);
+            Assert.Null(session.TryProduceOutput());
+        }
+        using var advanced = JsonDocument.Parse((await session.ProcessStreamingAsync(RuntimeJson.Encode(
+            new(Epochs, peer.Sequence + 2, 2, new ApplyWorld([])), Counter(submitted.RootElement, "output_sequence")), CancellationToken.None))!);
+        _ = Entry(advanced, "service_invocation");
+    }
+
     /// <summary>Один wire frame применяет 16 команд, но native handoff остаётся bounded и once-only при replay.</summary>
     [Fact]
     public async Task InputBatchCorrelatesEachAdmissionWithoutExpandingNativeBurst()

@@ -93,13 +93,13 @@ public sealed record ProjectionPage : TransportEvent
     }
 }
 
-/// <summary>Абсолютные memory caps одноразового broker; объём работы одного slice ограничен PageRows.</summary>
-/// <param name="MaxQueries">Активные slots вплоть до handoff terminal страницы, 1..16.</param>
+/// <summary>Опциональные work quotas; PageRows задаёт wire segmentation, а не общий throughput.</summary>
+/// <param name="MaxQueries">Активные slots до handoff terminal страницы; default — машинный maximum.</param>
 /// <param name="PageRows">Строк на страницу и work unit, 1..64; по умолчанию 32 для native apply budget.</param>
-/// <param name="MaxEvents">Максимум ещё не переданных страниц, 1..256.</param>
+/// <param name="MaxEvents">Ещё не переданные страницы; default — машинный maximum.</param>
 /// <param name="HistoryCapacity">Последние terminal fingerprints, 1..4096; вытеснение не снимает watermark.</param>
-/// <param name="MaxProducers">Не вытесняемые producer barriers текущего binding, 1..128.</param>
-/// <param name="MaxNodes">Максимум узлов и captured NodeKeys одной проекции, 1..10000.</param>
-/// <param name="MaxEdges">Максимум физических кабелей одной проекции, 0..100000.</param>
-public sealed record ProjectionOptions(int MaxQueries = 16, int PageRows = 32, int MaxEvents = 64,
-    int HistoryCapacity = 256, int MaxProducers = 128, int MaxNodes = 10_000, int MaxEdges = 100_000);
+/// <param name="MaxProducers">Не вытесняемые producer barriers; default — машинный maximum.</param>
+/// <param name="MaxNodes">Узлы и captured NodeKeys проекции; default — машинный maximum.</param>
+/// <param name="MaxEdges">Физические кабели проекции; default — машинный maximum.</param>
+public sealed record ProjectionOptions(int MaxQueries = int.MaxValue, int PageRows = 32, int MaxEvents = int.MaxValue,
+    int HistoryCapacity = 256, int MaxProducers = int.MaxValue, int MaxNodes = int.MaxValue, int MaxEdges = int.MaxValue);

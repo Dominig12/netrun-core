@@ -45,7 +45,7 @@ public sealed class ServiceCandidateSnapshot
 /// <param name="Frequency">Положительная native frequency либо null для control traffic.</param>
 /// <param name="MaxResults">Явный предел результатов; по умолчанию полный bounded candidate limit.</param>
 public sealed record DiscoveryRequest(RequestKey Key, ServiceKey Source, string DestinationFamily,
-    string? RecipientTag = null, bool Communications = false, int? Frequency = null, int MaxResults = 4096);
+    string? RecipientTag = null, bool Communications = false, int? Frequency = null, int MaxResults = int.MaxValue);
 
 /// <summary>Immutable страница только service identities; последующий transport и DM повторно проверяют доставку и native права.</summary>
 public sealed record DiscoveryPage : TransportEvent
@@ -72,16 +72,16 @@ public sealed record DiscoveryPage : TransportEvent
     }
 }
 
-/// <summary>Политики памяти и справедливого продвижения; параметры могут только уменьшать абсолютные пределы.</summary>
-/// <param name="MaxQueries">Одновременно принятые незавершённые запросы, максимум 256.</param>
-/// <param name="MaxQueriesPerSource">Запросы одного точного source service, максимум 64.</param>
-/// <param name="MaxCandidates">Pinned keys одного запроса, максимум 4096.</param>
-/// <param name="MaxRetainedCandidates">Сумма pinned keys всех активных запросов, максимум 50000.</param>
-/// <param name="MaxEvents">Непрочитанные страницы, максимум 256.</param>
+/// <summary>Опциональные quotas и справедливая ротация; default не ограничивает active work.</summary>
+/// <param name="MaxQueries">Одновременно принятые запросы; default — машинный maximum.</param>
+/// <param name="MaxQueriesPerSource">Запросы одного source service; default — машинный maximum.</param>
+/// <param name="MaxCandidates">Pinned keys одного запроса; default — полный каталог.</param>
+/// <param name="MaxRetainedCandidates">Сумма pinned keys активных запросов; default — машинный maximum.</param>
+/// <param name="MaxEvents">Непрочитанные страницы; default — машинный maximum.</param>
 /// <param name="PageSize">Результаты одной страницы, максимум 64.</param>
 /// <param name="ChecksPerSlice">Проверки одного query до уступки очереди, максимум 8.</param>
 /// <param name="HistoryCapacity">Окно terminal fingerprints без хранения результатов, максимум 4096.</param>
-/// <param name="MaxProducers">Не вытесняемые watermarks за binding, максимум 128.</param>
-public sealed record DiscoveryOptions(int MaxQueries = 256, int MaxQueriesPerSource = 64,
-    int MaxCandidates = 4096, int MaxRetainedCandidates = 50_000, int MaxEvents = 256,
-    int PageSize = 64, int ChecksPerSlice = 8, int HistoryCapacity = 4096, int MaxProducers = 128);
+/// <param name="MaxProducers">Не вытесняемые watermarks за binding; default — машинный maximum.</param>
+public sealed record DiscoveryOptions(int MaxQueries = int.MaxValue, int MaxQueriesPerSource = int.MaxValue,
+    int MaxCandidates = int.MaxValue, int MaxRetainedCandidates = int.MaxValue, int MaxEvents = int.MaxValue,
+    int PageSize = 64, int ChecksPerSlice = 8, int HistoryCapacity = 4096, int MaxProducers = int.MaxValue);

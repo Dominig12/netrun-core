@@ -305,6 +305,26 @@ public sealed class ProjectionTests
         Assert.Equal(AdmissionStatus.Accepted, broker.Submit(new(Request(2), ProjectionKind.Graph)).Status);
     }
 
+    /// <summary>Read-model queue сохраняет ранний blocked запрос при освобождении capacity между кадрами.</summary>
+    [Fact]
+    public void PipelinedProjectionHeadRetainsAdmissionUntilRetryOrCancellation()
+    {
+        var graph = Graph([Node("A")]);
+        using var broker = new ProjectionBroker(() => graph, new(), "binding", new(MaxQueries: 1, MaxProducers: 2));
+        broker.Submit(new(Request(1, "busy"), ProjectionKind.Graph));
+        Assert.Equal(AdmissionStatus.WouldBlock, broker.Submit(new(Request(1), ProjectionKind.Graph)).Status);
+        broker.Advance(1);
+        Assert.Single(Drain(broker));
+        Assert.Equal("producer_backpressure", broker.Submit(new(Request(2), ProjectionKind.Graph)).Code);
+        Assert.Equal(AdmissionStatus.Accepted, broker.Submit(new(Request(1), ProjectionKind.Graph)).Status);
+        Assert.Equal(AdmissionStatus.WouldBlock, broker.Submit(new(Request(2), ProjectionKind.Graph)).Status);
+        Assert.Equal("request_unknown", broker.Cancel(Request(2)).Code);
+        broker.Advance(1);
+        Assert.Single(Drain(broker));
+        Assert.Equal(AdmissionStatus.Accepted, broker.Submit(new(Request(3), ProjectionKind.Graph)).Status);
+        Assert.Equal(2, broker.ProducerCount);
+    }
+
     /// <summary>История вытесняется, но producer watermark запрещает повтор забытого ключа и changed body известного ключа.</summary>
     [Fact]
     public void HistoryWatermarksAndProducerCapacityPreventReexecution()

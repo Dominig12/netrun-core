@@ -82,6 +82,8 @@ public sealed class ProjectionBroker : IDisposable
     private readonly Queue<RequestKey> _historyOrder = [];
     /// <summary>Максимальный принятый serial producer за binding; не вытесняется вместе с history.</summary>
     private readonly Dictionary<string, ulong> _watermarks = new(StringComparer.Ordinal);
+    /// <summary>Один blocked head на producer сохраняет порядок admission через независимые input frames.</summary>
+    private readonly ProducerAdmissionFence _admission;
     /// <summary>Число cursor keys и tree entries живых workspace; output rows учитываются отдельно.</summary>
     private int _retainedNodes;
     /// <summary>Запрет повторного входа через внешние callbacks; объект обслуживается одним владельцем.</summary>
@@ -97,7 +99,7 @@ public sealed class ProjectionBroker : IDisposable
     public int RetainedNodeCount => _retainedNodes;
     /// <summary>Количество terminal replay records в bounded окне.</summary>
     public int HistoryCount => _history.Count;
-    /// <summary>Число не вытесняемых producer barriers текущего binding.</summary>
+    /// <summary>Число зарегистрированных producers, включая blocked identity с watermark ноль.</summary>
     public int ProducerCount => _watermarks.Count;
 
     /// <summary>
@@ -111,14 +113,15 @@ public sealed class ProjectionBroker : IDisposable
         ArgumentNullException.ThrowIfNull(trees);
         if (!NodeFactRules.IsValidText(bindingEpoch, 128)) throw new ArgumentException("Invalid binding.", nameof(bindingEpoch));
         _options = options ?? new();
-        if (_options.MaxQueries is < 1 or > 16 || _options.PageRows is < 1 or > 64 ||
-            _options.MaxEvents is < 1 or > 256 || _options.HistoryCapacity is < 1 or > 4096 ||
-            _options.MaxProducers is < 1 or > 128 || _options.MaxNodes is < 1 or > 10_000 ||
-            _options.MaxEdges is < 0 or > 100_000)
+        if (_options.MaxQueries < 1 || _options.PageRows is < 1 or > 64 ||
+            _options.MaxEvents < 1 || _options.HistoryCapacity is < 1 or > 4096 ||
+            _options.MaxProducers < 1 || _options.MaxNodes < 1 ||
+            _options.MaxEdges < 0)
             throw new ArgumentException("Invalid projection options.", nameof(options));
         _graph = graph;
         _trees = trees;
         _binding = bindingEpoch;
+        _admission = new(_watermarks, _options.MaxProducers);
         _availabilityRevision = availabilityRevision;
         _authority = authority;
     }
@@ -127,30 +130,34 @@ public sealed class ProjectionBroker : IDisposable
     public TransportAdmission Submit(ProjectionRequest request)
     {
         Enter();
-        try
-        {
-            ArgumentNullException.ThrowIfNull(request);
-            if (!IsValidRequest(request)) return new(AdmissionStatus.Rejected, "invalid_request", request.Key);
-            var fingerprint = Fingerprint(request);
-            if (_active.TryGetValue(request.Key, out var active))
-                return Same(active.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, active.TerminalCode ?? "duplicate",
-                    request.Key, active.TerminalState ?? RequestState.Queued) : new(AdmissionStatus.Rejected, "request_conflict", request.Key);
-            if (_history.TryGetValue(request.Key, out var history))
-                return Same(history.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, history.Code, request.Key, history.State) :
-                    new(AdmissionStatus.Rejected, "request_conflict", request.Key);
-            if (_watermarks.TryGetValue(request.Key.ProducerId, out var watermark) && request.Key.Sequence <= watermark)
-                return new(AdmissionStatus.Rejected, "request_expired", request.Key);
-            if (!_watermarks.ContainsKey(request.Key.ProducerId) && _watermarks.Count == _options.MaxProducers)
-                return new(AdmissionStatus.WouldBlock, "producer_capacity", request.Key);
-            if (_active.Count == _options.MaxQueries)
-                return new(AdmissionStatus.WouldBlock, "query_capacity", request.Key);
-            var query = new Query { Request = request, Fingerprint = fingerprint };
-            query.Schedule = _schedule.AddLast(query);
-            _active.Add(request.Key, query);
-            _watermarks[request.Key.ProducerId] = request.Key.Sequence;
-            return new(AdmissionStatus.Accepted, "accepted", request.Key, RequestState.Queued);
-        }
+        try { return _admission.Complete(SubmitCore(request)); }
         finally { _busy = false; }
+    }
+
+    /// <summary>Проверяет replay/fence перед резервированием domain capacity.</summary>
+    private TransportAdmission SubmitCore(ProjectionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!IsValidRequest(request)) return new(AdmissionStatus.Rejected, "invalid_request", request.Key);
+        var fingerprint = Fingerprint(request);
+        if (_active.TryGetValue(request.Key, out var active))
+            return Same(active.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, active.TerminalCode ?? "duplicate",
+                request.Key, active.TerminalState ?? RequestState.Queued) : new(AdmissionStatus.Rejected, "request_conflict", request.Key);
+        if (_history.TryGetValue(request.Key, out var history))
+            return Same(history.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, history.Code, request.Key, history.State) :
+                new(AdmissionStatus.Rejected, "request_conflict", request.Key);
+        if (_watermarks.TryGetValue(request.Key.ProducerId, out var watermark) && request.Key.Sequence <= watermark)
+            return new(AdmissionStatus.Rejected, "request_expired", request.Key);
+        if (_admission.Blocks(request.Key)) return new(AdmissionStatus.WouldBlock, "producer_backpressure", request.Key);
+        if (!_watermarks.ContainsKey(request.Key.ProducerId) && _watermarks.Count == _options.MaxProducers)
+            return new(AdmissionStatus.WouldBlock, "producer_capacity", request.Key);
+        if (_active.Count == _options.MaxQueries)
+            return new(AdmissionStatus.WouldBlock, "query_capacity", request.Key);
+        var query = new Query { Request = request, Fingerprint = fingerprint };
+        query.Schedule = _schedule.AddLast(query);
+        _active.Add(request.Key, query);
+        _watermarks[request.Key.ProducerId] = request.Key.Sequence;
+        return new(AdmissionStatus.Accepted, "accepted", request.Key, RequestState.Queued);
     }
 
     /// <summary>
@@ -234,6 +241,7 @@ public sealed class ProjectionBroker : IDisposable
         try
         {
             if (!TransportFingerprint.ValidKey(key)) return new(false, "invalid_key");
+            _admission.Release(key);
             if (!_active.TryGetValue(key, out var query)) return new(false, "request_unknown");
             if (_events.Count == _options.MaxEvents && !_events.Any(pending => pending.Query.Request.Key == key))
                 return new(false, "would_block", true);
@@ -255,6 +263,7 @@ public sealed class ProjectionBroker : IDisposable
         _history.Clear();
         _historyOrder.Clear();
         _watermarks.Clear();
+        _admission.Clear();
         _retainedNodes = 0;
     }
 

@@ -141,6 +141,6 @@ public sealed record RuntimeResult(ApplyResult Apply, MirrorSyncState SyncState,
 /// <param name="GraphSynchronization">Ограничения единственного persistent graph stream.</param>
 public sealed record RuntimeOptions(CoreLimits? Core = null, TopologyOptions? Topology = null,
     RouterOptions? Router = null, TransportOptions? Transport = null, bool DeferTopologyBuild = false,
-    int PumpWorkBudget = 128, CommunicationOptions? Communication = null, DiscoveryOptions? Discovery = null,
+    int PumpWorkBudget = int.MaxValue, CommunicationOptions? Communication = null, DiscoveryOptions? Discovery = null,
     ProjectionOptions? Projection = null, SourceTreeOptions? SourceTrees = null,
     GraphSynchronizationOptions? GraphSynchronization = null);

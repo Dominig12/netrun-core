@@ -26,7 +26,7 @@ public sealed class CommunicationPortCatalog
         _ports.Values.ToDictionary(port => port.Owner));
 
     /// <summary>Фиксирует память catalog; lists в raw facts дополнительно ограничиваются до построения reader.</summary>
-    public CommunicationPortCatalog(int maxPorts = 10_000, int maxLinksPerPort = 128, int maxFrequencies = 128)
+    public CommunicationPortCatalog(int maxPorts = int.MaxValue, int maxLinksPerPort = 128, int maxFrequencies = 128)
     {
         if (maxPorts < 1 || maxLinksPerPort is < 0 or > 4096 || maxFrequencies is < 0 or > 4096)
             throw new CommunicationException("invalid_communication_catalog_options");

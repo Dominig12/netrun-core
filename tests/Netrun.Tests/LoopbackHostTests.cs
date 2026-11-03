@@ -41,6 +41,31 @@ public sealed class LoopbackHostTests
         public void Dispose() { }
     }
 
+    /// <summary>Только socket-stall fixture: runtime ownership проверяет отдельный настоящий TCP scenario.</summary>
+    private sealed class PushFactory : IHostSessionFactory
+    {
+        internal readonly PushSession Session = new();
+        public IHostSession Create(Epochs epochs) => Session;
+    }
+
+    /// <summary>Максимальные immutable тела заполняют bounded egress, когда peer перестаёт читать.</summary>
+    private sealed class PushSession : IStreamingHostSession
+    {
+        public StreamingHostLimits Limits { get; } = new(QueueCapacity: 8);
+        private readonly byte[] _body = new byte[FramedStream.MaxFrameBytes];
+        internal int Produced;
+        internal int DisconnectedCount;
+        internal int DisposedCount;
+        public void EnableStreaming() { }
+        public ValueTask<byte[]> ProcessAsync(ReadOnlyMemory<byte> body, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<byte[]?> ProcessStreamingAsync(ReadOnlyMemory<byte> body, CancellationToken cancellationToken) => ValueTask.FromResult<byte[]?>(null);
+        public ValueTask<IReadOnlyList<byte[]>> ProcessStreamingBatchAsync(IReadOnlyList<ReadOnlyMemory<byte>> bodies, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<byte[]>>([]);
+        public byte[]? TryProduceOutput() { Interlocked.Increment(ref Produced); return _body; }
+        public void Disconnected() => Interlocked.Increment(ref DisconnectedCount);
+        public void Dispose() => Interlocked.Increment(ref DisposedCount);
+    }
+
     /// <summary>Создаёт точную допустимую hello-схему; токен остаётся только внутри локального тестового потока.</summary>
     private static byte[] Hello(string binding, string token = Token) => JsonSerializer.SerializeToUtf8Bytes(new
     {
@@ -92,12 +117,48 @@ public sealed class LoopbackHostTests
         }
     }
 
+    /// <summary>Закрытие stalled reader отменяет writer и owner; ни один producer не переживает session.Dispose.</summary>
+    [Fact]
+    public async Task DuplexSlowConsumerCanDisconnectWithoutLeakingOwnerOrWriter()
+    {
+        var factory = new PushFactory();
+        await using var host = new LoopbackHost(new(0, Token), factory);
+        using var stop = new CancellationTokenSource();
+        var run = host.RunAsync(stop.Token);
+        using var client = new TcpClient { ReceiveBufferSize = 1024 };
+        try
+        {
+            await client.ConnectAsync(IPAddress.Loopback, host.Port);
+            var stream = client.GetStream();
+            var hello = Encoding.UTF8.GetString(Hello("stream-stall"));
+            await FramedStream.WriteAsync(stream, Encoding.UTF8.GetBytes(hello[..^1] + ",\"duplex\":true}"));
+            using var acknowledged = await ReadAsync(stream);
+            Assert.True(acknowledged.RootElement.GetProperty("duplex").GetBoolean());
+            // Stop consuming while the background producer fills TCP and the bounded output channel.
+            await Task.Delay(500);
+            Assert.InRange(Volatile.Read(ref factory.Session.Produced), 1, 24);
+        }
+        finally
+        {
+            client.Dispose();
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.Equal(1, factory.Session.DisconnectedCount);
+        Assert.Equal(1, factory.Session.DisposedCount);
+        var produced = factory.Session.Produced;
+        await Task.Delay(75);
+        Assert.Equal(produced, factory.Session.Produced);
+    }
+
     /// <summary>Недопустимые, дублирующиеся или неверно подписанные hello не создают состояние мира.</summary>
     [Theory]
     [InlineData("bad_token")]
     [InlineData("duplicate")]
     [InlineData("unknown")]
     [InlineData("invalid_utf8")]
+    [InlineData("bad_duplex")]
+    [InlineData("duplicate_duplex")]
     public async Task InvalidHandshakeCannotReachFactory(string scenario)
     {
         var factory = new Factory();
@@ -114,6 +175,8 @@ public sealed class LoopbackHostTests
                 "bad_token" => Hello("binding", new string('!', 32)),
                 "duplicate" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"kind\":\"hello\"")),
                 "unknown" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"extra\":true")),
+                "bad_duplex" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"duplex\":1")),
+                "duplicate_duplex" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"duplex\":true,\"duplex\":true")),
                 _ => new byte[] { 0xff }
             };
             await FramedStream.WriteAsync(stream, body);

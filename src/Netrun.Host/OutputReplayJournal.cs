@@ -1,12 +1,12 @@
 namespace Netrun.Host;
 
 /// <summary>Ограниченное окно уже отправленных кадров; ACK означает обработку DM, а не запись в сокет.</summary>
-internal sealed class OutputReplayJournal(int maximumFrames = 64, int maximumBytes = 8 * 1024 * 1024)
+internal sealed class OutputReplayJournal(int maximumFrames = 64, long maximumBytes = 8 * 1024 * 1024)
 {
     /// <summary>Кадры удерживаются до cumulative ACK и не меняются при replay.</summary>
     private readonly Queue<(ulong Sequence, byte[] Body)> _frames = [];
     /// <summary>Занятые байты тел, без сетевого framing header.</summary>
-    private int _bytes;
+    private long _bytes;
     /// <summary>Последний назначенный output sequence.</summary>
     internal ulong LastSequence { get; private set; }
     /// <summary>Последняя подтверждённая DM граница; старый ACK не откатывает её.</summary>

@@ -176,6 +176,103 @@ public sealed class GraphSynchronizationTests
         throw new InvalidOperationException("Bounded graph batch did not finish.");
     }
 
+    /// <summary>Duplex credit window выдаёт четыре страницы без ACK и принимает только выданный cumulative prefix.</summary>
+    [Fact]
+    public void FourPageWindowBoundsProductionAndCumulativeAcknowledgement()
+    {
+        using var scene = new Scene(6, new(PageOperations: 1, MaxInflightPages: 4));
+        var client = new Client();
+        Assert.Equal(AdmissionStatus.Accepted, scene.Broker.Start(Key()).Status);
+        Assert.Equal(4, scene.Broker.Advance(100));
+        Assert.Equal(4, scene.Broker.InflightPageCount);
+        Assert.Equal(4, scene.Broker.EventCount);
+        Assert.Equal(0, scene.Broker.Advance(100));
+        Assert.Equal("page_not_delivered", scene.Broker.Continue(Key(), 4).Code);
+        for (var index = 1; index <= 2; index++)
+        {
+            var page = Take(scene.Broker);
+            Assert.Equal((ulong)index, page.PageIndex);
+            client.Apply(page);
+        }
+        Assert.Equal("page_not_delivered", scene.Broker.Continue(Key(), 3).Code);
+        Assert.Equal(0, scene.Broker.BaselineRowCount);
+        Assert.True(scene.Broker.Continue(Key(), 2).Accepted);
+        Assert.Equal(2, scene.Broker.BaselineRowCount);
+        Assert.Equal(2, scene.Broker.Advance(100));
+        Assert.Equal(4, scene.Broker.InflightPageCount);
+        Assert.Equal(4, scene.Broker.EventCount);
+        ulong last = 2;
+        var complete = false;
+        for (var guard = 0; guard < 10 && !complete; guard++)
+        {
+            while (scene.Broker.TryDequeueEvent(out var page))
+            {
+                Assert.NotNull(page);
+                Assert.Equal(++last, page.PageIndex);
+                client.Apply(page);
+                complete |= page.BatchComplete;
+            }
+            Assert.True(scene.Broker.Continue(Key(), last).Accepted);
+            Assert.Equal("duplicate", scene.Broker.Continue(Key(), last).Code);
+            Assert.InRange(scene.Broker.Advance(100), 0, 4);
+        }
+        Assert.True(complete);
+        Assert.Equal(client.Nodes.Count + client.Edges.Count, scene.Broker.BaselineRowCount);
+        Assert.Equal(0, scene.Broker.TargetRowCount);
+        Assert.Equal(0, scene.Broker.InflightPageCount);
+    }
+
+    /// <summary>Последняя страница batch — barrier; новый target не захватывается после частичного cumulative ACK.</summary>
+    [Fact]
+    public void FinalPageAcknowledgementSeparatesFrozenBatches()
+    {
+        using var scene = new Scene(1, new(PageOperations: 1, MaxInflightPages: 4));
+        scene.Broker.Start(Key());
+        Assert.Equal(3, scene.Broker.Advance(100));
+        var first = Take(scene.Broker);
+        var second = Take(scene.Broker);
+        var last = Take(scene.Broker);
+        Assert.True(last.BatchComplete);
+        scene.Move(0, 20);
+        Assert.True(scene.Broker.Continue(Key(), second.PageIndex).Accepted);
+        Assert.Equal(0, scene.Broker.Advance(100));
+        Assert.Equal(3, scene.Broker.TargetRowCount);
+        Assert.True(scene.Broker.Continue(Key(), last.PageIndex).Accepted);
+        Assert.Equal(0, scene.Broker.TargetRowCount);
+        Assert.InRange(scene.Broker.Advance(100), 1, 4);
+        var delta = Take(scene.Broker);
+        Assert.Equal(GraphSynchronizationPhase.Delta, delta.Phase);
+        Assert.Equal(last.GraphVersion, delta.FromGraphVersion);
+        Assert.True(delta.GraphVersion > first.GraphVersion);
+    }
+
+    /// <summary>Отмена отзывает все retained pages и rows; только выданный terminal ACK освобождает stream.</summary>
+    [Fact]
+    public void CancellationDropsWindowReferencesAndRequiresTerminalHandoff()
+    {
+        using var scene = new Scene(6, new(PageOperations: 1, MaxInflightPages: 4));
+        scene.Broker.Start(Key());
+        scene.Broker.Advance(100);
+        var obsolete = Take(scene.Broker);
+        Assert.True(scene.Broker.Cancel(Key()).Accepted);
+        Assert.Equal(0, scene.Broker.TargetRowCount);
+        Assert.Equal(0, scene.Broker.BaselineRowCount);
+        Assert.Equal(1, scene.Broker.InflightPageCount);
+        Assert.Equal(1, scene.Broker.EventCount);
+        Assert.Equal("page_unknown", scene.Broker.Continue(Key(), obsolete.PageIndex).Code);
+        Assert.Equal("page_not_delivered", scene.Broker.Continue(Key(), 5).Code);
+        var terminal = Take(scene.Broker);
+        Assert.Equal(5UL, terminal.PageIndex);
+        Assert.Equal("cancelled", terminal.Code);
+        Assert.True(scene.Broker.Continue(Key(), terminal.PageIndex).Accepted);
+        Assert.Equal(0, scene.Broker.ActiveCount);
+        Assert.Equal(0, scene.Broker.InflightPageCount);
+        Assert.Equal(0, scene.Broker.EventCount);
+        scene.Broker.ConfigurePageWindow(4);
+        scene.Broker.Start(Key(2));
+        Assert.Throws<InvalidOperationException>(() => scene.Broker.ConfigurePageWindow(1));
+    }
+
     /// <summary>Source ledger разделяет endpoint revisions и transit proofs, используя current world даже без graph rebuild.</summary>
     [Fact]
     public void AuthorityTracksCurrentLeafFactsSeparatelyFromInfrastructureAndAvailability()

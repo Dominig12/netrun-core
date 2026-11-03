@@ -20,7 +20,7 @@ public sealed class ServiceDirectory
     public ulong Revision { get; private set; }
 
     /// <summary>Создаёт индекс с явным верхним пределом, не выделяя полный лимит заранее.</summary>
-    public ServiceDirectory(int maxServices = 20_000)
+    public ServiceDirectory(int maxServices = int.MaxValue)
     {
         if (maxServices < 1)
             throw new ArgumentOutOfRangeException(nameof(maxServices));
@@ -72,11 +72,11 @@ public sealed class ServiceDirectory
     }
 
     /// <summary>Копирует максимум limit ключей одного bucket, проверяя только один дополнительный элемент для truncation.</summary>
-    public ServiceCandidateSnapshot Capture(string family, string? tag = null, int limit = 4096)
+    public ServiceCandidateSnapshot Capture(string family, string? tag = null, int limit = int.MaxValue)
     {
         if (!NodeFactRules.IsValidText(family, 128) || tag is not null && !NodeFactRules.IsValidText(tag, 256))
             throw new ArgumentException("Invalid discovery selection.");
-        if (limit is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(limit));
+        if (limit < 1) throw new ArgumentOutOfRangeException(nameof(limit));
         SortedSet<string>? bucket;
         if (tag is null) _families.TryGetValue(family, out bucket);
         else _tags.TryGetValue((family, tag), out bucket);

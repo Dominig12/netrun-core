@@ -94,5 +94,6 @@ public sealed record GraphSynchronizationPage : TransportEvent
 /// <param name="PageOperations">Операции одной страницы, 1..32.</param>
 /// <param name="HistoryCapacity">Terminal statuses без retained graph/payload, 1..4096.</param>
 /// <param name="MaxProducers">Не вытесняемые serial barriers за binding, 1..128.</param>
-public sealed record GraphSynchronizationOptions(int MaxNodes = 10_000, int MaxEdges = 100_000,
-    int PageOperations = 32, int HistoryCapacity = 256, int MaxProducers = 128);
+/// <param name="MaxInflightPages">Окно неподтверждённых страниц; 0 — без cap, legacy peer использует одну страницу.</param>
+public sealed record GraphSynchronizationOptions(int MaxNodes = int.MaxValue, int MaxEdges = int.MaxValue,
+    int PageOperations = 32, int HistoryCapacity = 256, int MaxProducers = int.MaxValue, int MaxInflightPages = 1);

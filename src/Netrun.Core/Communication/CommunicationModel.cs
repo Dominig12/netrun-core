@@ -52,7 +52,7 @@ public sealed class CommunicationPortSnapshot
 /// <param name="MaxNodes">Максимальный исходный physical graph для одного поиска.</param>
 /// <param name="MaxQueueEntries">Предел одновременно ожидающих augmented queue candidates.</param>
 public sealed record CommunicationOptions(double NativeLatencyDs = 3, int CacheCapacity = 256,
-    int MaxNodes = 10_000, int MaxQueueEntries = 100_000);
+    int MaxNodes = int.MaxValue, int MaxQueueEntries = int.MaxValue);
 
 /// <summary>Явный opt-in communication channel; общий NetworkRouter этой capability не получает.</summary>
 public interface ICommunicationRouteProvider

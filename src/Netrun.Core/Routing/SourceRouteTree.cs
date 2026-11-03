@@ -14,7 +14,7 @@ public sealed record SourceRouteEntry(NodeKey? Previous, double LatencyDs, bool 
 /// <param name="CacheCapacity">Общий максимум положительных и отрицательных деревьев; ноль отключает кеш.</param>
 /// <param name="MaxNodes">Максимум узлов исходной публикации и длины материализуемого пути.</param>
 /// <param name="MaxQueueEntries">Максимум одновременно ожидающих кандидатов Dijkstra, включая устаревшие приоритеты.</param>
-public sealed record SourceTreeOptions(int CacheCapacity = 16, int MaxNodes = 10_000, int MaxQueueEntries = 100_000);
+public sealed record SourceTreeOptions(int CacheCapacity = 16, int MaxNodes = int.MaxValue, int MaxQueueEntries = int.MaxValue);
 
 /// <summary>
 /// Неизменяемое полное дерево одного источника. Хранит только поколения и скаляры,

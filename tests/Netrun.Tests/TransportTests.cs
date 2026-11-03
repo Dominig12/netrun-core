@@ -87,6 +87,58 @@ public sealed class TransportTests
     private static InvocationResult Result(ServiceInvocation invocation, NetworkValue? payload = null) =>
         new(invocation.BindingEpoch, invocation.InvocationId, true, payload);
 
+    /// <summary>Поздний pipelined serial не закрывает watermark запроса, который ещё ждёт admission capacity.</summary>
+    [Fact]
+    public void PipelinedAdmissionFenceSurvivesCapacityReleaseAndKeepsProducerRegistryBounded()
+    {
+        var scene = new Scene(new(MaxActive: 1, MaxProducers: 2));
+        scene.Transport.Submit(Request(producer: "busy"), 0);
+        Assert.Equal(AdmissionStatus.WouldBlock, scene.Transport.Submit(Request(), 0).Status);
+        Assert.Equal(2, scene.Transport.ProducerCount);
+        Assert.Equal("producer_capacity", scene.Transport.Submit(Request(producer: "third"), 0).Code);
+        scene.Transport.Advance(0, 1);
+        var busy = Take<ServiceInvocation>(scene.Transport);
+        Assert.True(scene.Transport.CompleteInvocation(Result(busy), 0).Accepted);
+        _ = Take<RequestCompleted>(scene.Transport);
+        Assert.Equal("producer_backpressure", scene.Transport.Submit(Request(2), 0).Code);
+        Assert.Equal(AdmissionStatus.Accepted, scene.Transport.Submit(Request(), 0).Status);
+        Assert.True(scene.Transport.Cancel(Request().Key, 0).Accepted);
+        _ = Take<RequestCompleted>(scene.Transport);
+        Assert.Equal(AdmissionStatus.Accepted, scene.Transport.Submit(Request(2), 0).Status);
+    }
+
+    /// <summary>Coalescing также не обходит blocked head; отмена непринятого запроса освобождает producer.</summary>
+    [Fact]
+    public void PipelinedCoalescingWaitsForHeadCancellation()
+    {
+        var scene = new Scene(new(MaxActive: 1), safety: OperationSafety.Idempotent);
+        var state = Request() with { CoalescingKey = "state" };
+        Assert.Equal(AdmissionStatus.Accepted, scene.Transport.Submit(state, 0).Status);
+        Assert.Equal(AdmissionStatus.WouldBlock, scene.Transport.Submit(Request(2), 0).Status);
+        var later = Request(3) with { CoalescingKey = "state" };
+        Assert.Equal("producer_backpressure", scene.Transport.Submit(later, 0).Code);
+        Assert.Equal("request_unknown", scene.Transport.Cancel(Request(2).Key, 0).Code);
+        Assert.Equal(AdmissionStatus.Coalesced, scene.Transport.Submit(later, 0).Status);
+        Assert.Equal(RequestState.Superseded, Take<RequestCompleted>(scene.Transport).State);
+        scene.Transport.Advance(0, 1);
+        Assert.True(later.Payload.DeepEquals(Take<ServiceInvocation>(scene.Transport).Payload));
+    }
+
+    /// <summary>Смена source generation завершает старый head отказом и освобождает admission нового экземпляра.</summary>
+    [Fact]
+    public void PipelinedAdmissionFenceReleasesRejectedStaleGeneration()
+    {
+        var scene = new Scene(new(MaxActive: 1));
+        scene.Transport.Submit(Request(producer: "busy"), 0);
+        Assert.Equal(AdmissionStatus.WouldBlock, scene.Transport.Submit(Request(), 0).Status);
+        Assert.True(scene.Transport.Cancel(Request(producer: "busy").Key, 0).Accepted);
+        _ = Take<RequestCompleted>(scene.Transport);
+        var previous = scene.World.MutableServices["source"];
+        scene.World.MutableServices["source"] = previous with { Generation = 2, Revision = 2 };
+        Assert.Equal(AdmissionStatus.Rejected, scene.Transport.Submit(Request(), 0).Status);
+        Assert.Equal(AdmissionStatus.Accepted, scene.Transport.Submit(Request(2) with { Source = new("source", 2) }, 0).Status);
+    }
+
     /// <summary>Даже нулевой transit требует Advance; known delivery-only outcome и оба уровня replay не дублируются.</summary>
     [Fact]
     public void ZeroDelayIsAsyncAndKnownCompletionIsDeduplicated()

@@ -1,5 +1,16 @@
 # Проверка Core и интеграции станции
 
+## Изменения 2026-11-03
+
+Добавлены continuous duplex I/O, coalesced fact groups, cumulative GraphSync page
+ACK, producer admission fences и defaults без application work/queue quotas.
+Текущие C# проекты и тестовые исходники собираются в Release без предупреждений.
+Новые долгие Windows/Docker и нагрузочные прогоны отложены по запросу пользователя;
+результаты прежних запусков ниже относятся к архитектуре до этих изменений.
+Сценарии regressions добавлены в исходники для последующего запуска.
+
+## Предыдущая проверка
+
 Дата: 2026-11-02. Локально Windows x64, .NET SDK 10.0.403,
 BYOND 516.1688 x86, Release/net10.0. Ниже приведены локальные результаты;
 удалённый статус конкретной ревизии доступен в [GitHub Actions](https://github.com/Dominig12/netrun-core/actions).

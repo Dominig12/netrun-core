@@ -68,6 +68,8 @@ public sealed class ServiceDiscovery : IDisposable
     private readonly Queue<RequestKey> _historyOrder = [];
     /// <summary>Максимальный принятый serial каждого producer за binding.</summary>
     private readonly Dictionary<string, ulong> _watermarks = new(StringComparer.Ordinal);
+    /// <summary>Один blocked head на producer сохраняет порядок admission через независимые input frames.</summary>
+    private readonly ProducerAdmissionFence _admission;
     /// <summary>Общее число retained key objects, включая output pages завершённых запросов.</summary>
     private int _retained;
     /// <summary>Защита последовательного владельца от повторного входа через внешний route provider.</summary>
@@ -83,7 +85,7 @@ public sealed class ServiceDiscovery : IDisposable
     public int RetainedCandidateCount => _retained;
     /// <summary>Число bounded terminal replay records.</summary>
     public int HistoryCount => _history.Count;
-    /// <summary>Число не вытесняемых producer barriers за binding.</summary>
+    /// <summary>Число зарегистрированных producers, включая blocked identity с watermark ноль.</summary>
     public int ProducerCount => _watermarks.Count;
 
     /// <summary>Получает typed dependencies; вызовы выполняются одним владельцем без I/O, tasks и фоновых потоков.</summary>
@@ -97,17 +99,18 @@ public sealed class ServiceDiscovery : IDisposable
         ArgumentNullException.ThrowIfNull(routes);
         if (!NodeFactRules.IsValidText(bindingEpoch, 128)) throw new ArgumentException("Invalid binding.", nameof(bindingEpoch));
         _options = options ?? new();
-        if (_options.MaxQueries is < 1 or > 256 || _options.MaxQueriesPerSource is < 1 or > 64 ||
-            _options.MaxCandidates is < 1 or > 4096 || _options.MaxRetainedCandidates is < 1 or > 50_000 ||
-            _options.MaxEvents is < 1 or > 256 || _options.PageSize is < 1 or > 64 ||
-            _options.ChecksPerSlice is < 1 or > 8 || _options.HistoryCapacity is < 1 or > 4096 ||
-            _options.MaxProducers is < 1 or > 128)
+        if (_options.MaxQueries < 1 || _options.MaxQueriesPerSource < 1 ||
+            _options.MaxCandidates < 1 || _options.MaxRetainedCandidates < 1 ||
+            _options.MaxEvents < 1 || _options.PageSize is < 1 or > 64 ||
+            _options.ChecksPerSlice < 1 || _options.HistoryCapacity is < 1 or > 4096 ||
+            _options.MaxProducers < 1)
             throw new ArgumentException("Invalid discovery options.", nameof(options));
         _world = world;
         _directory = directory;
         _graph = graph;
         _routes = routes;
         _binding = bindingEpoch;
+        _admission = new(_watermarks, _options.MaxProducers);
         _communications = communications;
     }
 
@@ -115,37 +118,41 @@ public sealed class ServiceDiscovery : IDisposable
     public TransportAdmission Submit(DiscoveryRequest request)
     {
         Enter();
-        try
-        {
-            ArgumentNullException.ThrowIfNull(request);
-            if (!IsValidRequest(request)) return new(AdmissionStatus.Rejected, "invalid_request", request.Key);
-            var fingerprint = Fingerprint(request);
-            if (_active.TryGetValue(request.Key, out var active))
-                return Same(active.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, "duplicate", request.Key, RequestState.Queued) :
-                    new(AdmissionStatus.Rejected, "request_conflict", request.Key);
-            if (_history.TryGetValue(request.Key, out var history))
-                return Same(history.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, history.Code, request.Key, history.State) :
-                    new(AdmissionStatus.Rejected, "request_conflict", request.Key);
-            if (_watermarks.TryGetValue(request.Key.ProducerId, out var barrier) && request.Key.Sequence <= barrier)
-                return new(AdmissionStatus.Rejected, "request_expired", request.Key);
-            if (!_watermarks.ContainsKey(request.Key.ProducerId) && _watermarks.Count == _options.MaxProducers)
-                return new(AdmissionStatus.WouldBlock, "producer_capacity", request.Key);
-            if (!Source(request.Source, out var source)) return new(AdmissionStatus.Rejected, "source_unavailable", request.Key);
-            _perSource.TryGetValue(request.Source, out var sourceCount);
-            if (_active.Count == _options.MaxQueries) return new(AdmissionStatus.WouldBlock, "query_capacity", request.Key);
-            if (sourceCount == _options.MaxQueriesPerSource) return new(AdmissionStatus.WouldBlock, "source_capacity", request.Key);
-            if (_directory.CountCandidates(request.DestinationFamily, request.RecipientTag, _options.MaxCandidates) > _options.MaxRetainedCandidates - _retained)
-                return new(AdmissionStatus.WouldBlock, "candidate_capacity", request.Key);
-            var snapshot = _directory.Capture(request.DestinationFamily, request.RecipientTag, _options.MaxCandidates);
-            var query = new Query { Request = request, Fingerprint = fingerprint, Source = source!, Snapshot = snapshot };
-            query.Schedule = _schedule.AddLast(query);
-            _active.Add(request.Key, query);
-            _perSource[request.Source] = sourceCount + 1;
-            _retained += snapshot.Keys.Count;
-            _watermarks[request.Key.ProducerId] = request.Key.Sequence;
-            return new(AdmissionStatus.Accepted, "accepted", request.Key, RequestState.Queued);
-        }
+        try { return _admission.Complete(SubmitCore(request)); }
         finally { _busy = false; }
+    }
+
+    /// <summary>Проверяет replay/fence перед резервированием domain capacity.</summary>
+    private TransportAdmission SubmitCore(DiscoveryRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!IsValidRequest(request)) return new(AdmissionStatus.Rejected, "invalid_request", request.Key);
+        var fingerprint = Fingerprint(request);
+        if (_active.TryGetValue(request.Key, out var active))
+            return Same(active.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, "duplicate", request.Key, RequestState.Queued) :
+                new(AdmissionStatus.Rejected, "request_conflict", request.Key);
+        if (_history.TryGetValue(request.Key, out var history))
+            return Same(history.Fingerprint, fingerprint) ? new(AdmissionStatus.Duplicate, history.Code, request.Key, history.State) :
+                new(AdmissionStatus.Rejected, "request_conflict", request.Key);
+        if (_watermarks.TryGetValue(request.Key.ProducerId, out var barrier) && request.Key.Sequence <= barrier)
+            return new(AdmissionStatus.Rejected, "request_expired", request.Key);
+        if (_admission.Blocks(request.Key)) return new(AdmissionStatus.WouldBlock, "producer_backpressure", request.Key);
+        if (!_watermarks.ContainsKey(request.Key.ProducerId) && _watermarks.Count == _options.MaxProducers)
+            return new(AdmissionStatus.WouldBlock, "producer_capacity", request.Key);
+        if (!Source(request.Source, out var source)) return new(AdmissionStatus.Rejected, "source_unavailable", request.Key);
+        _perSource.TryGetValue(request.Source, out var sourceCount);
+        if (_active.Count == _options.MaxQueries) return new(AdmissionStatus.WouldBlock, "query_capacity", request.Key);
+        if (sourceCount == _options.MaxQueriesPerSource) return new(AdmissionStatus.WouldBlock, "source_capacity", request.Key);
+        if (_directory.CountCandidates(request.DestinationFamily, request.RecipientTag, _options.MaxCandidates) > _options.MaxRetainedCandidates - _retained)
+            return new(AdmissionStatus.WouldBlock, "candidate_capacity", request.Key);
+        var snapshot = _directory.Capture(request.DestinationFamily, request.RecipientTag, _options.MaxCandidates);
+        var query = new Query { Request = request, Fingerprint = fingerprint, Source = source!, Snapshot = snapshot };
+        query.Schedule = _schedule.AddLast(query);
+        _active.Add(request.Key, query);
+        _perSource[request.Source] = sourceCount + 1;
+        _retained += snapshot.Keys.Count;
+        _watermarks[request.Key.ProducerId] = request.Key.Sequence;
+        return new(AdmissionStatus.Accepted, "accepted", request.Key, RequestState.Queued);
     }
 
     /// <summary>Расходует максимум workBudget candidate checks; query уступает очередь не позднее ChecksPerSlice.</summary>
@@ -243,6 +250,7 @@ public sealed class ServiceDiscovery : IDisposable
         try
         {
             if (!TransportFingerprint.ValidKey(key)) return new(false, "invalid_key");
+            _admission.Release(key);
             if (!_active.TryGetValue(key, out var query)) return new(false, "request_unknown");
             if (_events.Count == _options.MaxEvents && !_events.Any(entry => entry.Request.Key == key))
                 return new(false, "would_block", true);
@@ -268,6 +276,7 @@ public sealed class ServiceDiscovery : IDisposable
         _history.Clear();
         _historyOrder.Clear();
         _watermarks.Clear();
+        _admission.Clear();
         _retained = 0;
     }
 
@@ -400,7 +409,7 @@ public sealed class ServiceDiscovery : IDisposable
     /// <summary>Проверяет bounded wire/domain metadata до любой мутации admission.</summary>
     internal static bool IsValidRequest(DiscoveryRequest? request) => request is not null && TransportFingerprint.ValidKey(request.Key) && request.Source is { Generation: > 0 } &&
         NodeFactRules.IsValidText(request.Source.ServiceId, 128) && NodeFactRules.IsValidText(request.DestinationFamily, 128) &&
-        (request.RecipientTag is null || NodeFactRules.IsValidText(request.RecipientTag, 256)) && request.MaxResults is >= 1 and <= 4096 &&
+        (request.RecipientTag is null || NodeFactRules.IsValidText(request.RecipientTag, 256)) && request.MaxResults >= 1 &&
         request.Frequency is not <= 0 && (request.Communications || request.Frequency is null);
 
     /// <summary>Fingerprint зависит только от полного semantic запроса; churn мира не меняет dedup identity.</summary>

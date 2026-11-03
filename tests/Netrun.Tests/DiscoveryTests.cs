@@ -383,6 +383,25 @@ public sealed class DiscoveryTests
         Assert.Equal(AdmissionStatus.Accepted, scene.Discovery.Submit(Request(2)).Status);
     }
 
+    /// <summary>Освобождение query slot между кадрами не позволяет новому serial уничтожить retry старого.</summary>
+    [Fact]
+    public void PipelinedDiscoveryHeadRetainsAdmissionUntilRetryOrCancellation()
+    {
+        using var scene = new Scene(1, new(MaxQueries: 1, MaxProducers: 2));
+        scene.Discovery.Submit(Request(producer: "busy"));
+        Assert.Equal(AdmissionStatus.WouldBlock, scene.Discovery.Submit(Request()).Status);
+        scene.Discovery.Advance(100);
+        _ = Take(scene.Discovery);
+        Assert.Equal("producer_backpressure", scene.Discovery.Submit(Request(2)).Code);
+        Assert.Equal(AdmissionStatus.Accepted, scene.Discovery.Submit(Request()).Status);
+        Assert.Equal(AdmissionStatus.WouldBlock, scene.Discovery.Submit(Request(2)).Status);
+        Assert.Equal("request_unknown", scene.Discovery.Cancel(Request(2).Key).Code);
+        scene.Discovery.Advance(100);
+        _ = Take(scene.Discovery);
+        Assert.Equal(AdmissionStatus.Accepted, scene.Discovery.Submit(Request(3)).Status);
+        Assert.Equal(2, scene.Discovery.ProducerCount);
+    }
+
     /// <summary>Per-source и global query slots независимы; отказ не резервирует producer sequence.</summary>
     [Fact]
     public void SourceAndGlobalQueryCapsAreIndependent()

@@ -47,7 +47,7 @@ internal sealed class VersionedFactTable<T> where T : class
                         return "generation_retired";
                 }
             }
-            else if (owner._versions.Count + ++_added > maximum)
+            else if ((long)owner._versions.Count + ++_added > maximum)
                 return "catalog_capacity";
             _overlay[id] = new Entry(generation, revision, fact);
             return null;

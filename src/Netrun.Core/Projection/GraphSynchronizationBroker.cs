@@ -8,7 +8,7 @@ namespace Netrun.Core.Projection;
 
 /// <summary>
 /// Один persistent graph stream: ACKed baseline и один frozen target, без restart на каждом leaf move.
-/// Native применяет максимум 32 operations, затем explicit Continue подтверждает именно application commit.
+/// Native применяет максимум 32 operations на страницу; cumulative Continue подтверждает application commit.
 /// </summary>
 public sealed class GraphSynchronizationBroker : IDisposable
 {
@@ -43,6 +43,8 @@ public sealed class GraphSynchronizationBroker : IDisposable
     private readonly Queue<RequestKey> _historyOrder = [];
     /// <summary>Забытый старый producer serial нельзя принять повторно после history eviction.</summary>
     private readonly Dictionary<string, ulong> _watermarks = new(StringComparer.Ordinal);
+    /// <summary>Один blocked head на producer сохраняет порядок admission через независимые input frames.</summary>
+    private readonly ProducerAdmissionFence _admission;
     /// <summary>Один принятый stream; terminal slot освобождается после ACK terminal страницы.</summary>
     private RequestKey? _key;
     /// <summary>Единственная retained structural publication target; baseline не удерживает GraphSnapshot.</summary>
@@ -59,12 +61,16 @@ public sealed class GraphSynchronizationBroker : IDisposable
     private ulong _pageSerial;
     /// <summary>Последняя подтверждённая page.</summary>
     private ulong _acknowledgedPage;
-    /// <summary>Ровно одна immutable page до explicit native application ACK.</summary>
-    private GraphSynchronizationPage? _inflight;
-    /// <summary>Событие ещё не передано Host journal.</summary>
-    private bool _eventPending;
-    /// <summary>Continue до фактического handoff не может подтверждать невыданные данные.</summary>
-    private bool _delivered;
+    /// <summary>Не более четырёх immutable pages до explicit native application ACK.</summary>
+    private readonly Queue<GraphSynchronizationPage> _inflight = [];
+    /// <summary>Те же pages до handoff в Host journal; ACK не может опережать эту границу.</summary>
+    private readonly Queue<GraphSynchronizationPage> _events = [];
+    /// <summary>Последняя фактически переданная Host page; publication сама по себе не разрешает ACK.</summary>
+    private ulong _deliveredPage;
+    /// <summary>Legacy one-page window расширяется только до начала stream выбранным duplex peer.</summary>
+    private int _pageWindow;
+    /// <summary>Следующий batch не захватывается до application ACK последней страницы текущего.</summary>
+    private bool _batchCompletePending;
     /// <summary>Terminal отказ/отмена после ACK освобождает stream slot и остаётся только в bounded history.</summary>
     private RequestState? _terminal;
     /// <summary>Безопасная terminal причина без native exception или входных значений.</summary>
@@ -76,8 +82,10 @@ public sealed class GraphSynchronizationBroker : IDisposable
 
     /// <summary>Один active stream либо ноль, включая terminal page до ACK.</summary>
     public int ActiveCount => _key is null ? 0 : 1;
-    /// <summary>Один unread event либо ноль; delivered-but-unACKed page остаётся in-flight.</summary>
-    public int EventCount => _eventPending ? 1 : 0;
+    /// <summary>Unread pages, не более согласованного окна; delivered-but-unACKed остаются in-flight.</summary>
+    public int EventCount => _events.Count;
+    /// <summary>Bounded produced pages, включая переданные Host и ещё не подтверждённые native peer.</summary>
+    public int InflightPageCount => _inflight.Count;
     /// <summary>Число node+edge rows именно native-ACKed baseline.</summary>
     public int BaselineRowCount => _baselineNodes.Count + _baselineEdges.Count;
     /// <summary>Число rows одного frozen target; после terminal/cancel равно нулю.</summary>
@@ -95,47 +103,69 @@ public sealed class GraphSynchronizationBroker : IDisposable
         ArgumentNullException.ThrowIfNull(authority);
         if (!NodeFactRules.IsValidText(bindingEpoch, 128)) throw new ArgumentException("Invalid binding.", nameof(bindingEpoch));
         _options = options ?? new();
-        if (_options.MaxNodes is < 1 or > 10_000 || _options.MaxEdges is < 0 or > 100_000 ||
-            _options.PageOperations is < 1 or > 32 || _options.HistoryCapacity is < 1 or > 4096 || _options.MaxProducers is < 1 or > 128)
+        if (_options.MaxNodes < 1 || _options.MaxEdges < 0 ||
+            _options.PageOperations is < 1 or > 32 || _options.HistoryCapacity is < 1 or > 4096 || _options.MaxProducers < 1 ||
+            _options.MaxInflightPages < 0)
             throw new ArgumentException("Invalid graph synchronization options.", nameof(options));
         _graph = graph;
         _authority = authority;
         _binding = bindingEpoch;
+        _pageWindow = _options.MaxInflightPages;
+        _admission = new(_watermarks, _options.MaxProducers);
+    }
+
+    /// <summary>Выбирает окно до Start; legacy peers не получают страницы поверх неподтверждённой.</summary>
+    public void ConfigurePageWindow(int maximumPages)
+    {
+        Enter();
+        try
+        {
+            if (maximumPages < 0) throw new ArgumentOutOfRangeException(nameof(maximumPages));
+            if (_key is not null) throw new InvalidOperationException("Graph page window must be selected before Start.");
+            _pageWindow = maximumPages;
+        }
+        finally { _busy = false; }
     }
 
     /// <summary>Резервирует один persistent stream; producer serial не расходуется при would_block.</summary>
     public TransportAdmission Start(RequestKey key)
     {
         Enter();
-        try
-        {
-            if (!TransportFingerprint.ValidKey(key)) return new(AdmissionStatus.Rejected, "invalid_key", key);
-            if (_key == key) return new(AdmissionStatus.Duplicate, _terminalCode ?? "duplicate", key, _terminal ?? RequestState.Queued);
-            if (_history.TryGetValue(key, out var history)) return new(AdmissionStatus.Duplicate, history.Code, key, history.State);
-            if (_watermarks.TryGetValue(key.ProducerId, out var serial) && key.Sequence <= serial)
-                return new(AdmissionStatus.Rejected, "request_expired", key);
-            if (_key is not null) return new(AdmissionStatus.WouldBlock, "stream_capacity", key);
-            if (!_watermarks.ContainsKey(key.ProducerId) && _watermarks.Count == _options.MaxProducers)
-                return new(AdmissionStatus.WouldBlock, "producer_capacity", key);
-            ClearRows();
-            _key = key;
-            _watermarks[key.ProducerId] = key.Sequence;
-            _pageSerial = 0;
-            _acknowledgedPage = 0;
-            _terminal = null;
-            _terminalCode = null;
-            return new(AdmissionStatus.Accepted, "accepted", key, RequestState.Queued);
-        }
+        try { return _admission.Complete(StartCore(key)); }
         finally { _busy = false; }
     }
 
-    /// <summary>Готовит максимум одну 32-op page; unACKed page применяет backpressure без потери target/diff cursor.</summary>
+    /// <summary>Проверяет replay/fence перед резервированием domain capacity.</summary>
+    private TransportAdmission StartCore(RequestKey key)
+    {
+        if (!TransportFingerprint.ValidKey(key)) return new(AdmissionStatus.Rejected, "invalid_key", key);
+        if (_key == key) return new(AdmissionStatus.Duplicate, _terminalCode ?? "duplicate", key, _terminal ?? RequestState.Queued);
+        if (_history.TryGetValue(key, out var history)) return new(AdmissionStatus.Duplicate, history.Code, key, history.State);
+        if (_watermarks.TryGetValue(key.ProducerId, out var serial) && key.Sequence <= serial)
+            return new(AdmissionStatus.Rejected, "request_expired", key);
+        if (_admission.Blocks(key)) return new(AdmissionStatus.WouldBlock, "producer_backpressure", key);
+        if (_key is not null) return new(AdmissionStatus.WouldBlock, "stream_capacity", key);
+        if (!_watermarks.ContainsKey(key.ProducerId) && _watermarks.Count == _options.MaxProducers)
+            return new(AdmissionStatus.WouldBlock, "producer_capacity", key);
+        ClearRows();
+        ClearPages();
+        _key = key;
+        _watermarks[key.ProducerId] = key.Sequence;
+        _pageSerial = 0;
+        _acknowledgedPage = 0;
+        _deliveredPage = 0;
+        _terminal = null;
+        _terminalCode = null;
+        return new(AdmissionStatus.Accepted, "accepted", key, RequestState.Queued);
+    }
+
+    /// <summary>Готовит bounded окно 32-op pages; заполнение окна сохраняет target/diff cursor до ACK.</summary>
     public int Advance(int workBudget)
     {
         Enter();
         try
         {
-            if (workBudget <= 0 || _key is null || _inflight is not null) return 0;
+            if (workBudget <= 0 || _key is null || (_pageWindow > 0 && _inflight.Count >= _pageWindow) || _batchCompletePending) return 0;
             if (_targetGraph is null)
             {
                 var graph = _graph();
@@ -145,8 +175,13 @@ public sealed class GraphSynchronizationBroker : IDisposable
                 try { Capture(graph); }
                 catch (RoutingException failure) { Terminal(failure.Code, RequestState.Failed); return 1; }
             }
-            Publish();
-            return 1;
+            var produced = 0;
+            while (produced < workBudget && (_pageWindow == 0 || _inflight.Count < _pageWindow) && !_batchCompletePending)
+            {
+                Publish();
+                produced++;
+            }
+            return produced;
         }
         finally { _busy = false; }
     }
@@ -157,16 +192,14 @@ public sealed class GraphSynchronizationBroker : IDisposable
         Enter();
         try
         {
-            if (!_eventPending) { page = null; return false; }
-            page = _inflight;
-            _eventPending = false;
-            _delivered = true;
+            if (!_events.TryDequeue(out page)) return false;
+            _deliveredPage = page.PageIndex;
             return true;
         }
         finally { _busy = false; }
     }
 
-    /// <summary>Применяет только фактически выданную page к baseline; duplicate ACK не повторяет mutation.</summary>
+    /// <summary>Cumulative ACK применяет только выданный FIFO prefix; duplicate ACK не повторяет mutation.</summary>
     public TransportActionResult Continue(RequestKey key, ulong pageIndex)
     {
         Enter();
@@ -177,13 +210,15 @@ public sealed class GraphSynchronizationBroker : IDisposable
                 return _history.TryGetValue(key, out var history) && pageIndex <= history.AcknowledgedPage ?
                     new(true, "duplicate") : new(false, "request_unknown");
             if (pageIndex <= _acknowledgedPage) return new(true, "duplicate");
-            if (_inflight is null || pageIndex != _inflight.PageIndex) return new(false, "page_unknown");
-            if (!_delivered) return new(false, "page_not_delivered");
-            var page = _inflight;
-            foreach (var operation in page.Operations) ApplyBaseline(operation);
+            if (!_inflight.Any(page => page.PageIndex == pageIndex)) return new(false, "page_unknown");
+            if (pageIndex > _deliveredPage) return new(false, "page_not_delivered");
+            GraphSynchronizationPage page;
+            do
+            {
+                page = _inflight.Dequeue();
+                foreach (var operation in page.Operations) ApplyBaseline(operation);
+            } while (page.PageIndex != pageIndex);
             _acknowledgedPage = pageIndex;
-            _inflight = null;
-            _delivered = false;
             if (_terminal is { } terminal)
             {
                 Remember(key, new(terminal, _terminalCode!, _acknowledgedPage));
@@ -211,6 +246,7 @@ public sealed class GraphSynchronizationBroker : IDisposable
         try
         {
             if (!TransportFingerprint.ValidKey(key)) return new(false, "invalid_key");
+            _admission.Release(key);
             if (_key != key) return _history.TryGetValue(key, out var history) && history.State == RequestState.Cancelled ?
                 new(true, "duplicate") : new(false, "request_unknown");
             if (_terminal == RequestState.Cancelled) return new(true, "duplicate");
@@ -227,12 +263,12 @@ public sealed class GraphSynchronizationBroker : IDisposable
         if (_disposed) return;
         _disposed = true;
         ClearRows();
-        _inflight = null;
-        _eventPending = false;
+        ClearPages();
         _key = null;
         _history.Clear();
         _historyOrder.Clear();
         _watermarks.Clear();
+        _admission.Clear();
     }
 
     /// <summary>Один bounded full comparison строит только net diff, не отправляя всю станцию повторно при одном leaf move.</summary>
@@ -288,7 +324,7 @@ public sealed class GraphSynchronizationBroker : IDisposable
     /// <summary>Ограничивает diff до union baseline/target rows до роста list.</summary>
     private void Add(GraphSynchronizationOperation operation)
     {
-        if (_operations.Count >= 2 * (_options.MaxNodes + _options.MaxEdges)) throw new RoutingException("graph_sync_capacity");
+        if (_operations.Count >= 2L * (_options.MaxNodes + (long)_options.MaxEdges)) throw new RoutingException("graph_sync_capacity");
         _operations.Add(operation);
     }
 
@@ -334,17 +370,18 @@ public sealed class GraphSynchronizationBroker : IDisposable
         var phase = _initialized ? GraphSynchronizationPhase.Delta : GraphSynchronizationPhase.Snapshot;
         var from = _baselineGraphVersion;
         ClearRows();
+        ClearPages();
         _terminal = state;
         _terminalCode = code;
         SetPage(new(_binding, _key!, NextPage(), phase, from, graphVersion, input, infrastructure, availability, [], true, code));
     }
 
-    /// <summary>Запоминает единственную page, которая не может потеряться при output pressure.</summary>
+    /// <summary>Окно удерживает immutable pages до explicit ACK, отдельно от фактического handoff.</summary>
     private void SetPage(GraphSynchronizationPage page)
     {
-        _inflight = page;
-        _eventPending = true;
-        _delivered = false;
+        _inflight.Enqueue(page);
+        _events.Enqueue(page);
+        _batchCompletePending = page.BatchComplete;
     }
 
     /// <summary>Выдаёт новый serial до page publication; wrap запрещён.</summary>
@@ -363,6 +400,14 @@ public sealed class GraphSynchronizationBroker : IDisposable
         _renamedNodes.Clear();
         _operations.Clear();
         _operationCursor = 0;
+        _batchCompletePending = false;
+    }
+
+    /// <summary>Отмена/teardown снимают обе очереди references до освобождения stream.</summary>
+    private void ClearPages()
+    {
+        _inflight.Clear();
+        _events.Clear();
     }
 
     /// <summary>Удаляет graph data без изменения producer barriers или page serial.</summary>

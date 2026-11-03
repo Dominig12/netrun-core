@@ -1,5 +1,15 @@
 # Проверка Core и интеграции станции
 
+## Мониторинг 2026-11-03
+
+Negotiated idle telemetry проверена настоящими loopback TCP тестами: два снимка
+приходят без входных сообщений/ACK, первый domain output сохраняет sequence 1,
+клиенты без opt-in не получают дополнительного трафика. Snapshot не меняет
+simulation time/runtime/replay, а active request count отражает ожидание native
+result и завершение. Все 35 Host/session tests прошли; Release build без
+предупреждений, whitespace verification и diff check прошли. Полный production
+Windows/Docker прогон этой версии пока не выполнен.
+
 ## Изменения 2026-11-03
 
 Добавлены continuous duplex I/O, coalesced fact groups, cumulative GraphSync page

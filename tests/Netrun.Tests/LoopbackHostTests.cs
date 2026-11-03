@@ -117,6 +117,71 @@ public sealed class LoopbackHostTests
         }
     }
 
+    /// <summary>Idle telemetry появляется только после opt-in, не требует poll и не двигает runtime/replay clock.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MonitoringIsNegotiatedAndIdleSamplesNeedNoApplicationAcknowledgement(bool monitoring)
+    {
+        await using var host = new LoopbackHost(new(0, Token), new RuntimeHostSessionFactory());
+        using var stop = new CancellationTokenSource();
+        var run = host.RunAsync(stop.Token);
+        try
+        {
+            using var client = new TcpClient { NoDelay = true };
+            await client.ConnectAsync(IPAddress.Loopback, host.Port);
+            var stream = client.GetStream();
+            await FramedStream.WriteAsync(stream, JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                kind = "hello",
+                protocol_major = 1,
+                protocol_minor = 3,
+                world_epoch = "monitor-world",
+                binding_epoch = "monitor-binding",
+                token = Token,
+                duplex = true,
+                monitoring
+            }));
+            using var hello = await ReadAsync(stream);
+            Assert.Equal(monitoring, hello.RootElement.GetProperty("monitoring").GetBoolean());
+            var epochs = new Epochs("monitor-world", hello.RootElement.GetProperty("engine_epoch").GetString()!, "monitor-binding");
+            if (monitoring)
+            {
+                for (var index = 1; index <= 2; index++)
+                {
+                    using var sample = await ReadAsync(stream);
+                    var root = sample.RootElement;
+                    Assert.Equal("monitor", root.GetProperty("kind").GetString());
+                    Assert.Equal(epochs.World, root.GetProperty("world_epoch").GetString());
+                    Assert.Equal(epochs.Engine, root.GetProperty("engine_epoch").GetString());
+                    Assert.Equal(epochs.Binding, root.GetProperty("binding_epoch").GetString());
+                    Assert.Equal(index.ToString(System.Globalization.CultureInfo.InvariantCulture), root.GetProperty("sample_sequence").GetString());
+                    Assert.False(root.TryGetProperty("output_sequence", out _));
+                    var metrics = root.GetProperty("host_metrics");
+                    Assert.Equal("awaiting_snapshot", metrics.GetProperty("sync_state").GetString());
+                    Assert.Equal("0", metrics.GetProperty("applied_sequence").GetString());
+                    Assert.Equal(0, metrics.GetProperty("output_journal_frames").GetInt32());
+                    Assert.Equal(0, metrics.GetProperty("output_unacked").GetInt32());
+                    Assert.Equal(0, metrics.GetProperty("simulation_time_ds").GetInt32());
+                    Assert.DoesNotContain(Token, root.GetRawText());
+                }
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(2250));
+                Assert.False(stream.DataAvailable);
+            }
+            // Две samples без ACK не расходуют output sequence; первый domain ответ по-прежнему имеет sequence 1.
+            await FramedStream.WriteAsync(stream, RuntimeJson.Encode(new(epochs, 1, 0,
+                new ApplyWorld([new SnapshotBegin("snapshot", 0, 3)]))));
+            using var applied = await ReadAsync(stream);
+            Assert.Equal("output", applied.RootElement.GetProperty("kind").GetString());
+            Assert.Equal("1", applied.RootElement.GetProperty("output_sequence").GetString());
+            Assert.Equal("1", applied.RootElement.GetProperty("applied_sequence").GetString());
+        }
+        finally { stop.Cancel(); await run; }
+    }
+
     /// <summary>Закрытие stalled reader отменяет writer и owner; ни один producer не переживает session.Dispose.</summary>
     [Fact]
     public async Task DuplexSlowConsumerCanDisconnectWithoutLeakingOwnerOrWriter()
@@ -159,6 +224,8 @@ public sealed class LoopbackHostTests
     [InlineData("invalid_utf8")]
     [InlineData("bad_duplex")]
     [InlineData("duplicate_duplex")]
+    [InlineData("bad_monitoring")]
+    [InlineData("duplicate_monitoring")]
     public async Task InvalidHandshakeCannotReachFactory(string scenario)
     {
         var factory = new Factory();
@@ -177,6 +244,8 @@ public sealed class LoopbackHostTests
                 "unknown" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"extra\":true")),
                 "bad_duplex" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"duplex\":1")),
                 "duplicate_duplex" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"duplex\":true,\"duplex\":true")),
+                "bad_monitoring" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"monitoring\":1")),
+                "duplicate_monitoring" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Hello("binding")).Replace("\"kind\":\"hello\"", "\"kind\":\"hello\",\"monitoring\":true,\"monitoring\":true")),
                 _ => new byte[] { 0xff }
             };
             await FramedStream.WriteAsync(stream, body);

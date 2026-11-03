@@ -7,7 +7,7 @@ using Netrun.Protocol;
 namespace Netrun.Host;
 
 /// <summary>Composition доменной сессии и подтверждаемого output journal после аутентификации.</summary>
-public sealed class RuntimeHostSession : IStreamingHostSession
+public sealed class RuntimeHostSession : IMonitoredHostSession
 {
     /// <summary>Bounded native apply burst: не более 256 projection rows за ответ, независимо от числа команд.</summary>
     private const int MaximumEventsPerReply = 8;
@@ -26,9 +26,85 @@ public sealed class RuntimeHostSession : IStreamingHostSession
     /// <summary>World inputs, объединённые с предшествующим fact frame до одного topology Pump.</summary>
     private ulong _coalescedFactFrames;
     /// <summary>Микросекунды текущего owner slice и наблюдавшийся максимум, без сетевого ожидания.</summary>
-    private double _lastApplyUs, _lastPumpUs, _maxApplyUs, _maxPumpUs, _maxProcessingUs;
+    private double _lastApplyUs, _lastPumpUs, _lastProcessingUs, _maxApplyUs, _maxPumpUs, _maxProcessingUs;
     /// <summary>Максимум одного не поместившегося immutable события; не теряется при границе кадра.</summary>
     private byte[]? _pendingEvent;
+    /// <summary>Независимые от gameplay counters только для negotiated мониторинга.</summary>
+    private ulong _monitorSequence;
+    /// <summary>Физический возраст сессии не используется как simulation clock.</summary>
+    private readonly long _startedAt = Stopwatch.GetTimestamp();
+
+    /// <summary>Диагностика не исполняет domain work и не удерживается в output replay journal.</summary>
+    public byte[] CreateMonitorFrame(HostConnectionMetrics connection)
+    {
+        if (!_streaming) throw new InvalidOperationException("Streaming is not enabled.");
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("kind", "monitor");
+            writer.WriteString("world_epoch", _epochs.World);
+            writer.WriteString("engine_epoch", _epochs.Engine);
+            writer.WriteString("binding_epoch", _epochs.Binding);
+            RuntimeOutputJson.Counter(writer, "sample_sequence", ++_monitorSequence);
+            writer.WriteStartObject("host_metrics");
+            writer.WriteString("sync_state", JsonNamingPolicy.SnakeCaseLower.ConvertName(_runtime.State.ToString()));
+            writer.WriteBoolean("topology_pending", _runtime.TopologyPending);
+            writer.WriteString("topology_error", _runtime.TopologyError);
+            writer.WriteString("communication_error", _runtime.CommunicationError);
+            RuntimeOutputJson.Counter(writer, "applied_sequence", _runtime.AppliedSequence);
+            writer.WriteNumber("simulation_time_ds", _runtime.SimulationTimeDs);
+            RuntimeOutputJson.Counter(writer, "graph_version", _runtime.Graph?.Version ?? 0);
+            RuntimeOutputJson.Counter(writer, "graph_input_sequence", _runtime.Graph?.InputSequence ?? 0);
+            writer.WriteNumber("node_count", _runtime.Nodes.Count);
+            writer.WriteNumber("service_count", _runtime.Services.Count);
+            writer.WriteNumber("sector_count", _runtime.Sectors.Count);
+            writer.WriteNumber("active_requests", _runtime.ActiveRequestCount);
+            writer.WriteNumber("active_discovery", _runtime.ActiveDiscoveryCount);
+            writer.WriteNumber("active_projections", _runtime.ActiveProjectionCount);
+            writer.WriteNumber("pending_events", _runtime.EventCount);
+            writer.WriteNumber("input_unacked", _inputReplies.Count);
+            writer.WriteNumber("output_unacked", _outputs.LastSequence - _outputs.Acknowledged);
+            writer.WriteNumber("received_messages", _receivedMessages);
+            writer.WriteNumber("push_outputs", _pushedOutputs);
+            writer.WriteNumber("coalesced_fact_frames", _coalescedFactFrames);
+            writer.WriteNumber("apply_us", _lastApplyUs);
+            writer.WriteNumber("pump_us", _lastPumpUs);
+            writer.WriteNumber("max_apply_us", _maxApplyUs);
+            writer.WriteNumber("max_pump_us", _maxPumpUs);
+            writer.WriteNumber("processing_us", _lastProcessingUs);
+            writer.WriteNumber("max_processing_us", _maxProcessingUs);
+            writer.WriteNumber("output_journal_frames", _outputs.Count);
+            writer.WriteNumber("output_journal_bytes", _outputs.Bytes);
+            writer.WriteNumber("input_queue_frames", connection.InputQueueFrames);
+            writer.WriteNumber("input_queue_bytes", connection.InputQueueBytes);
+            writer.WriteNumber("output_queue_frames", connection.OutputQueueFrames);
+            writer.WriteNumber("output_queue_bytes", connection.OutputQueueBytes);
+            writer.WriteNumber("managed_bytes", GC.GetTotalMemory(false));
+            writer.WriteNumber("gc_gen0", GC.CollectionCount(0));
+            writer.WriteNumber("gc_gen1", GC.CollectionCount(1));
+            writer.WriteNumber("gc_gen2", GC.CollectionCount(2));
+            writer.WriteNumber("uptime_ms", Stopwatch.GetElapsedTime(_startedAt).TotalMilliseconds);
+            // Process может быть недоступен под ограниченным OS account; диагностика не разрывает игровую сессию.
+            long? workingSet = null;
+            double? processCpu = null;
+            try
+            {
+                using var process = System.Diagnostics.Process.GetCurrentProcess();
+                workingSet = process.WorkingSet64;
+                processCpu = process.TotalProcessorTime.TotalMilliseconds;
+            }
+            catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+                // Отсутствие OS counters обозначается null, а не выдуманным нулём.
+            }
+            if (workingSet is { } bytes) writer.WriteNumber("working_set_bytes", bytes); else writer.WriteNull("working_set_bytes");
+            if (processCpu is { } cpu) writer.WriteNumber("process_cpu_ms", cpu); else writer.WriteNull("process_cpu_ms");
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+        return buffer.ToArray();
+    }
 
     /// <summary>Создаёт изолированное доменное состояние после успешного hello.</summary>
     public RuntimeHostSession(Epochs epochs, RuntimeOptions? options = null, StreamingHostLimits? streamingLimits = null)
@@ -275,6 +351,7 @@ public sealed class RuntimeHostSession : IStreamingHostSession
         }
         if (!allowEmpty && entries.Count == 0) return null;
         var processingUs = Stopwatch.GetElapsedTime(started).TotalMicroseconds;
+        _lastProcessingUs = processingUs;
         _maxProcessingUs = Math.Max(_maxProcessingUs, processingUs);
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))

@@ -98,6 +98,34 @@ Reader/owner/writer отменяются вместе до освобожден�
 сериализации его header/metrics; ожидание TCP не включено. Статистика числовая,
 не используется как identity или ACK и не сканирует живые native объекты.
 
+Для постоянного мониторинга duplex-клиент дополнительно передаёт `monitoring: true`
+в `hello`. `hello_ack.monitoring` подтверждает поддержку `IMonitoredHostSession`.
+Без opt-in или у legacy session дополнительные кадры не появляются. После
+согласования owner раз в две секунды отправляет отдельный epoch-bound кадр:
+
+```json
+{"kind":"monitor","world_epoch":"...","engine_epoch":"...","binding_epoch":"...","sample_sequence":"1","host_metrics":{"sync_state":"ready","applied_sequence":"42","uptime_ms":2000}}
+```
+
+`monitor` не имеет `output_sequence`, не попадает в replay journal, не требует
+ACK, не вызывает Pump и не изменяет logical sequence или simulation time.
+`sample_sequence` — только монотонный номер наблюдения внутри connection.
+Старая sample не накапливается за stalled writer: когда хотя бы один frame
+ожидает полного socket write, текущая telemetry sample пропускается. Поэтому
+пропуск sample не означает потерю domain output, а возраст наблюдения нужен
+для обнаружения занятого owner или egress pressure.
+
+`host_metrics` содержит scalar snapshot sync/topology readiness и безопасных
+error codes; node/service/sector counts, graph/input versions, active transport,
+discovery и projection counts, pending events, input/output queues (frames/bytes),
+output journal frames/bytes и текущие/максимальные Apply/Pump/processing timings.
+Дополнительно передаются managed bytes, process working set, cumulative process
+CPU milliseconds, GC generation collection counts и физический возраст сессии
+`uptime_ms`. `simulation_time_ds` остаётся только диагностическим значением.
+OS counters при недоступности равны `null`. Sampling не вызывает GC, не сканирует
+мир/реестры и не включает token, library paths или payload. Input queue включает
+прочитанный frame до передачи owner; output queue включает текущий socket write.
+
 Соседние world-fact inputs объединяются encoding-группами до восьми кадров:
 один Pump публикует итоговый граф, затем все `runtime_result` этой группы
 передаются **до** её native events. Перед зависимой командой facts обязательно

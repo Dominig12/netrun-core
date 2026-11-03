@@ -78,10 +78,11 @@ public sealed class LoopbackHost : IAsyncDisposable
         handshake.CancelAfter(_options.HandshakeTimeout);
         Epochs? epochs;
         var duplex = false;
+        var monitoring = false;
         try
         {
             var body = await FramedStream.ReadAsync(stream, handshake.Token);
-            epochs = body is null ? null : ReadHello(body, out duplex);
+            epochs = body is null ? null : ReadHello(body, out duplex, out monitoring);
         }
         catch (ProtocolException)
         {
@@ -113,6 +114,7 @@ public sealed class LoopbackHost : IAsyncDisposable
             if (duplex && session is not IStreamingHostSession)
                 throw new ProtocolException("duplex_unsupported");
             if (duplex) ((IStreamingHostSession)session).EnableStreaming();
+            monitoring = monitoring && duplex && session is IMonitoredHostSession;
             await FramedStream.WriteAsync(stream, JsonSerializer.SerializeToUtf8Bytes(new
             {
                 kind = "hello_ack",
@@ -125,13 +127,14 @@ public sealed class LoopbackHost : IAsyncDisposable
                 max_entries = BatchJson.MaxEntries,
                 max_input_commands = RuntimeJson.MaxInputCommands,
                 duplex,
+                monitoring,
                 max_inflight_frames = duplex ? ((IStreamingHostSession)session).Limits.MaximumInflightFrames : 1,
                 max_graph_pages = duplex ? ((IStreamingHostSession)session).Limits.GraphPageWindow : 1,
                 snapshot_checksum_version = 3
             }), handshake.Token);
             if (duplex)
             {
-                await StreamingConnection.RunAsync(stream, (IStreamingHostSession)session, _options.IdleTimeout, cancellationToken);
+                await StreamingConnection.RunAsync(stream, (IStreamingHostSession)session, _options.IdleTimeout, cancellationToken, monitoring);
                 return;
             }
             while (!cancellationToken.IsCancellationRequested)
@@ -158,9 +161,10 @@ public sealed class LoopbackHost : IAsyncDisposable
     }
 
     /// <summary>Строгий минимальный handshake: неизвестные и дублирующиеся поля запрещены, ошибки не содержат токена.</summary>
-    private Epochs? ReadHello(byte[] body, out bool duplex)
+    private Epochs? ReadHello(byte[] body, out bool duplex, out bool monitoring)
     {
         duplex = false;
+        monitoring = false;
         try
         {
             _ = StrictUtf8.GetCharCount(body);
@@ -170,8 +174,16 @@ public sealed class LoopbackHost : IAsyncDisposable
                 return null;
             var remaining = new HashSet<string>(["kind", "protocol_major", "protocol_minor", "world_epoch", "binding_epoch", "token"], StringComparer.Ordinal);
             var seenDuplex = false;
+            var seenMonitoring = false;
             foreach (var property in root.EnumerateObject())
             {
+                if (property.Name == "monitoring")
+                {
+                    if (seenMonitoring || property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
+                    seenMonitoring = true;
+                    monitoring = property.Value.GetBoolean();
+                    continue;
+                }
                 if (property.Name == "duplex")
                 {
                     if (seenDuplex || property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;

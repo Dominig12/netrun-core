@@ -11,6 +11,10 @@ internal sealed class OutputReplayJournal(int maximumFrames = 64, long maximumBy
     internal ulong LastSequence { get; private set; }
     /// <summary>Последняя подтверждённая DM граница; старый ACK не откатывает её.</summary>
     internal ulong Acknowledged { get; private set; }
+    /// <summary>Диагностика читает только counters, без копирования retained frame bodies.</summary>
+    internal int Count => _frames.Count;
+    /// <summary>Фактически удерживаемые replay payload bytes; wire header сюда не входит.</summary>
+    internal long Bytes => _bytes;
     /// <summary>Резервирует возможность максимального кадра до изменения engine.</summary>
     internal bool CanReserve => _frames.Count < maximumFrames &&
         _bytes <= maximumBytes - Netrun.Protocol.FramedStream.MaxFrameBytes && LastSequence < ulong.MaxValue;

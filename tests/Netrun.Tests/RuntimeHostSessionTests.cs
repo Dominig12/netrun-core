@@ -113,6 +113,55 @@ public sealed class RuntimeHostSessionTests
     /// <summary>Конечные quotas включаются явно только в проверках credit/backpressure.</summary>
     private static StreamingHostLimits FiniteStreaming => new(8, 8, 8, 8, 4);
 
+    /// <summary>Снятие snapshot не потребляет sequence/ACK и отражает очереди без исполнения domain work.</summary>
+    [Fact]
+    public async Task MonitoringSnapshotIsIndependentOfRuntimeAndReplayProgress()
+    {
+        using var session = new RuntimeHostSession(Epochs);
+        session.EnableStreaming();
+        var peer = new Peer(Epochs, async body => (await session.ProcessStreamingAsync(body, CancellationToken.None))!);
+        using var ready = JsonDocument.Parse(await peer.Synchronize());
+        var graphVersion = Counter(Entry(ready, "runtime_result"), "graph_version");
+        Assert.Null(await session.ProcessStreamingAsync(RuntimeJson.EncodePoll(Epochs, peer.Ack, 0), CancellationToken.None));
+        using var sample = JsonDocument.Parse(session.CreateMonitorFrame(new(3, 1024, 0, 0)));
+        var root = sample.RootElement;
+        Assert.Equal("monitor", root.GetProperty("kind").GetString());
+        Assert.Equal(Epochs.Binding, root.GetProperty("binding_epoch").GetString());
+        Assert.False(root.TryGetProperty("output_sequence", out _));
+        Assert.False(root.TryGetProperty("results", out _));
+        Assert.Equal(1UL, Counter(root, "sample_sequence"));
+        var metrics = root.GetProperty("host_metrics");
+        Assert.Equal("ready", metrics.GetProperty("sync_state").GetString());
+        Assert.False(metrics.GetProperty("topology_pending").GetBoolean());
+        Assert.Equal(peer.Sequence, Counter(metrics, "applied_sequence"));
+        Assert.Equal(graphVersion, Counter(metrics, "graph_version"));
+        Assert.Equal(2, metrics.GetProperty("node_count").GetInt32());
+        Assert.Equal(2, metrics.GetProperty("service_count").GetInt32());
+        Assert.Equal(3, metrics.GetProperty("input_queue_frames").GetInt32());
+        Assert.Equal(1024, metrics.GetProperty("input_queue_bytes").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("output_journal_frames").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("output_journal_bytes").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("output_unacked").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("simulation_time_ds").GetInt32());
+        Assert.True(metrics.GetProperty("managed_bytes").GetInt64() > 0);
+        Assert.True(metrics.GetProperty("uptime_ms").GetDouble() >= 0);
+        Assert.Null(session.TryProduceOutput());
+        using var second = JsonDocument.Parse(session.CreateMonitorFrame(default));
+        Assert.Equal(2UL, Counter(second.RootElement, "sample_sequence"));
+        var ack = peer.Ack;
+        using var applied = JsonDocument.Parse(await peer.Send(new ConfigureBackbone(true)));
+        Assert.Equal(ack + 1, Counter(applied.RootElement, "output_sequence"));
+        Assert.DoesNotContain(Token, root.GetRawText());
+        Assert.DoesNotContain("payload", root.GetRawText());
+        using var submitted = JsonDocument.Parse(await peer.Send(new SubmitRequest(Request())));
+        var invocation = Entry(submitted, "service_invocation");
+        using var active = JsonDocument.Parse(session.CreateMonitorFrame(default));
+        Assert.Equal(1, active.RootElement.GetProperty("host_metrics").GetProperty("active_requests").GetInt32());
+        await peer.Send(new FinishInvocation(new(Epochs.Binding, invocation.GetProperty("invocation_id").GetString()!, true, NetworkValue.Null)));
+        using var terminal = JsonDocument.Parse(session.CreateMonitorFrame(default));
+        Assert.Equal(0, terminal.RootElement.GetProperty("host_metrics").GetProperty("active_requests").GetInt32());
+    }
+
     /// <summary>Duplex принимает входное окно до чтения ответов и отправляет оставшиеся страницы без poll-запросов.</summary>
     [Fact]
     public async Task DuplexPipelinesInputsAndPushesProjectionWithBoundedCreditsAndNoAckLoop()

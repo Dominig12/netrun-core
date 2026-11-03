@@ -225,7 +225,7 @@ public static class RuntimeJson
     /// <summary>Выделяет только логические команды; неизвестные world kinds затем отвергает BatchJson.</summary>
     private static bool IsCommand(string kind) => kind is "request_submit" or "request_cancel" or "invocation_result" or "route_query" or "backbone_configure" or
         "service_discover" or "service_discovery_cancel" or "projection_query" or "projection_cancel" or "anchor_query" or
-        "graph_sync_start" or "graph_sync_continue" or "graph_sync_cancel";
+        "graph_sync_start" or "graph_sync_continue" or "graph_sync_cancel" or "service_watch" or "service_unwatch";
 
     /// <summary>Разбирает allowlisted логическую команду с точным набором обязательных nullable-полей.</summary>
     private static RuntimeCommand ReadCommand(JsonElement entry)
@@ -246,6 +246,14 @@ public static class RuntimeJson
                 return new DiscoverServices(new DiscoveryRequest(RequestId(entry.GetProperty("request_id")), ReadService(entry.GetProperty("source")),
                     Text(entry.GetProperty("destination_family"), 128), NullableText(entry.GetProperty("recipient_tag"), 256), communications,
                     requestedFrequency, Integer(entry.GetProperty("max_results"), 1, int.MaxValue)));
+            case "service_watch":
+                Fields(entry, "kind", "request_id", "source", "destination_family", "recipient_tag");
+                return new WatchServices(new ServiceWatchRequest(RequestId(entry.GetProperty("request_id")),
+                    ReadService(entry.GetProperty("source")), Text(entry.GetProperty("destination_family"), 128),
+                    NullableText(entry.GetProperty("recipient_tag"), 256)));
+            case "service_unwatch":
+                Fields(entry, "kind", "request_id");
+                return new UnwatchServices(RequestId(entry.GetProperty("request_id")));
             case "service_discovery_cancel":
                 Fields(entry, "kind", "request_id");
                 return new CancelDiscovery(RequestId(entry.GetProperty("request_id")));
@@ -374,6 +382,10 @@ public static class RuntimeJson
                 if (discover.MaxResults < 1 || discover.Frequency is <= 0 ||
                     !discover.Communications && discover.Frequency is not null) throw Schema();
                 break;
+            case WatchServices watch:
+                if (!ServiceWatchBroker.IsValidRequest(watch.Request)) throw Schema();
+                break;
+            case UnwatchServices unwatch: ValidateRequestKey(unwatch.Key); break;
             case CancelDiscovery cancel: ValidateRequestKey(cancel.Key); break;
             case QueryProjection projection:
                 if (!ProjectionBroker.IsValidRequest(projection.Request)) throw Schema();
@@ -442,6 +454,17 @@ public static class RuntimeJson
                 writer.WriteBoolean("communications", discover.Request.Communications);
                 if (discover.Request.Frequency is { } discoveryFrequency) writer.WriteNumber("frequency", discoveryFrequency); else writer.WriteNull("frequency");
                 writer.WriteNumber("max_results", discover.Request.MaxResults);
+                break;
+            case WatchServices watch:
+                writer.WriteString("kind", "service_watch");
+                writer.WriteString("request_id", watch.Request.Key.Id);
+                WriteService(writer, "source", watch.Request.Source);
+                writer.WriteString("destination_family", watch.Request.Family);
+                writer.WriteString("recipient_tag", watch.Request.Tag);
+                break;
+            case UnwatchServices unwatch:
+                writer.WriteString("kind", "service_unwatch");
+                writer.WriteString("request_id", unwatch.Key.Id);
                 break;
             case CancelDiscovery cancel:
                 writer.WriteString("kind", "service_discovery_cancel");

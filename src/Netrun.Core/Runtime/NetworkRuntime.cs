@@ -46,6 +46,8 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private readonly ServiceDirectory _directory;
     /// <summary>Bounded async discovery имеет отдельные query/pages caps; после invalidation больше не выдаёт наблюдения.</summary>
     private ServiceDiscovery? _discovery;
+    /// <summary>Persistent indexed observations; only facts generate notifications.</summary>
+    private ServiceWatchBroker? _serviceWatches;
     /// <summary>Общий bounded full source-tree cache использует тот же live availability overlay, что pair router.</summary>
     private readonly SourceRouteTreeProvider _sourceTrees;
     /// <summary>Одноразовые graph/routes UI проекции без native effects.</summary>
@@ -56,6 +58,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     private GraphSynchronizationBroker? _graphSynchronization;
     /// <summary>Число независимых work/output lanes одного последовательного владельца.</summary>
     private const int LaneCount = 4;
+    private const int OutputLaneCount = 5;
     /// <summary>Первый work producer следующего Pump; единичный budget справедлив между calls.</summary>
     private int _nextPumpLane;
     /// <summary>Независимый round-robin transport/discovery/projection outputs.</summary>
@@ -104,9 +107,10 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
     /// <summary>Число незавершённых bounded запросов; после Dispose — ноль.</summary>
     public int ActiveRequestCount => _transport?.ActiveCount ?? 0;
     /// <summary>Число ожидающих отдачи transport events; payload не включается в диагностику.</summary>
-    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0);
+    public int EventCount => (_transport?.EventCount ?? 0) + (_discovery?.EventCount ?? 0) + (_serviceWatches?.EventCount ?? 0) + (_projections?.EventCount ?? 0) + (_graphSynchronization?.EventCount ?? 0);
     /// <summary>Количество активных async lookup, независимо от machine request slots.</summary>
     public int ActiveDiscoveryCount => _discovery?.ActiveCount ?? 0;
+    public int ActiveServiceWatchCount => _serviceWatches?.ActiveCount ?? 0;
     /// <summary>Число живых service IDs в lookup индексе; диагностический getter не копирует registry.</summary>
     public int DiscoveryServiceCount => _directory.Count;
     /// <summary>Монотонная версия actual touched-service изменений lookup индекса.</summary>
@@ -134,6 +138,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         _directory = new ServiceDirectory(_core.MaxTrackedServices);
         _discovery = new ServiceDiscovery(this, _directory, () => Graph, new SourceTreeRouteProvider(_sourceTrees, _availability),
             epochs.Binding, _options.Discovery, _communicationRoutes);
+        _serviceWatches = new ServiceWatchBroker(this, _directory, epochs.Binding);
         if (_options.Projection?.PageRows > 32)
             throw new ArgumentOutOfRangeException(nameof(options), "Runtime projection pages cannot exceed 32 rows.");
         _authority = new GraphAuthorityTracker(this);
@@ -212,9 +217,9 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         try
         {
             _transport!.Advance(SimulationTimeDs, 0);
-            for (var offset = 0; offset < LaneCount; offset++)
+            for (var offset = 0; offset < OutputLaneCount; offset++)
             {
-                var lane = (_nextOutputLane + offset) % LaneCount;
+                var lane = (_nextOutputLane + offset) % OutputLaneCount;
                 if (!TryLaneEvent(lane, out transportEvent)) continue;
                 if (transportEvent is ServiceInvocation invocation)
                     transportEvent = invocation with
@@ -225,7 +230,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                         AvailabilityInfrastructureStamp = _authority.AvailabilityInfrastructureStamp,
                         CommunicationRevision = invocation.Traffic == TrafficClass.Communications ? _communicationPorts.Revision : null
                     };
-                _nextOutputLane = (lane + 1) % LaneCount;
+                _nextOutputLane = (lane + 1) % OutputLaneCount;
                 return true;
             }
             transportEvent = null;
@@ -345,6 +350,12 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                         break;
                     case CancelDiscovery cancel:
                         action = _discovery!.Cancel(cancel.Key);
+                        break;
+                    case WatchServices watch:
+                        admission = _serviceWatches?.Subscribe(watch.Request) ?? new(AdmissionStatus.Rejected, "unavailable", watch.Request.Key);
+                        break;
+                    case UnwatchServices unwatch:
+                        action = _serviceWatches?.Unsubscribe(unwatch.Key) ?? new(false, "unavailable");
                         break;
                     case QueryProjection projection:
                         admission = _projections!.Submit(projection.Request);
@@ -473,6 +484,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
                 continue;
             if (after is not null) IndexService(after);
             else if (before is not null) _directory.Remove(new(before.ServiceId, before.Generation));
+            _serviceWatches?.Observe(before, after);
             if (before?.Communication is not null)
             {
                 owners.Add(before.Owner);
@@ -547,6 +559,7 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             if (before == after)
                 continue;
             _authority.ObserveNodeChange(before, after);
+            _serviceWatches?.ObserveNode(before, after);
             if (after is null)
             {
                 if (before is not null)
@@ -688,6 +701,11 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
             transportEvent = graphPage;
             return true;
         }
+        if (lane == 4 && _serviceWatches is not null && _serviceWatches.TryDequeueEvent(out var watchEvent))
+        {
+            transportEvent = watchEvent;
+            return true;
+        }
         transportEvent = null;
         return false;
     }
@@ -702,6 +720,8 @@ public sealed class NetworkRuntime : INetworkWorldView, IDisposable
         _graphSynchronization?.Dispose();
         _graphSynchronization = null;
         _directory.Reset();
+        _serviceWatches?.Dispose();
+        _serviceWatches = null;
     }
 
     /// <summary>Проверяет lifetime и single-owner reentrancy до любых изменений.</summary>

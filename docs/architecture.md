@@ -126,3 +126,47 @@ operations по 32 за страницу. ACKed baseline и один captured ta
 UI/машины читают импортированные bindings и predecessor trees; штатный external
 режим не запускает DM topology builders, nearest-APC scan или Dijkstra.
 Native authorization и физическое выполнение действия остаются в игре.
+
+
+## Persistent Core-owned service watches
+
+The authoritative C# service directory now accepts `service_watch` and `service_unwatch`
+through the existing ordered RuntimeInput/ACK stream. A watch is keyed by an exact
+source service generation, destination family and optional tag:
+
+```json
+{"kind":"service_watch","request_id":"watch:1",
+ "source":{"service_id":"source-instance","generation":"1"},
+ "destination_family":"atmos.controller","recipient_tag":null}
+```
+
+Once admitted, the Core emits asynchronous `service_watch_event` output entries
+through the ordinary output replay journal, without a DM polling loop:
+
+```json
+{"binding_epoch":"binding","request_id":"watch:1","kind":"service_watch_event",
+ "change":"added","family":"atmos.controller","tag":null,
+ "service":{"service_id":"controller-instance","generation":"1"},
+ "online":true,"directory_revision":"100"}
+```
+
+The initial snapshot consists of bounded `added` observations followed by one
+`snapshot_end` event. Subsequent service fact mutations yield `added`,
+`updated` or `removed` events. A tag or generation replacement emits removal
+of the old identity before addition of the new one. `source_unavailable` and
+`resync_required` terminate a watch; the native owner must subscribe again.
+A watch has no fixed expiry and is cancelled explicitly using `service_unwatch`
+with the original `request_id`. All notifications are bounded; overflow
+produces `resync_required` rather than silently dropping changes.
+
+These notifications report **catalog advertisements, not network reachability**.
+They grant no native authority, do not call DM handlers, and do not replace live
+routing, permissions, generation or operation-contract checks for
+`request_submit -> service_invocation -> invocation_result -> request_completed`.
+A service state change must be exported as a revised ServiceFact to generate an
+`updated` event; unchanged re-advertisements are ignored.
+
+The DM adapter retains only a weak native owner and delivers notifications outside
+the frame decoder. This incrementally replaces repeated full discovery polling
+with core-owned event subscriptions while the Core remains responsible for
+network queries and route computation, and DM performs only native gameplay actions.

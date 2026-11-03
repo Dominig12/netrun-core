@@ -39,6 +39,12 @@ public sealed record DiscoverServices(DiscoveryRequest Request) : RuntimeCommand
 /// <param name="Key">Точный producer/serial исходного discovery запроса.</param>
 public sealed record CancelDiscovery(RequestKey Key) : RuntimeCommand;
 
+/// <summary>Long-lived Core-owned service family/tag observation for one exact native source.</summary>
+public sealed record WatchServices(ServiceWatchRequest Request) : RuntimeCommand;
+
+/// <summary>Cancel an existing watch without performing native effects.</summary>
+public sealed record UnwatchServices(RequestKey Key) : RuntimeCommand;
+
 /// <summary>Начинает одноразовую read-only graph/routes проекцию для native UI.</summary>
 /// <param name="Request">Typed вид таблицы, exact source и route availability policy.</param>
 public sealed record QueryProjection(ProjectionRequest Request) : RuntimeCommand;

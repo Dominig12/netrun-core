@@ -31,7 +31,16 @@ try
             Console.Error.WriteLine("session_token_missing");
             return 2;
         }
-        await using var host = new LoopbackHost(new(port, token), new RuntimeHostSessionFactory());
+        // Bound the socket channels by default. The independent application ACK
+        // windows stay unchanged until the DM peer explicitly negotiates credits.
+        var limits = new StreamingHostLimits(
+            MaximumInflightFrames: Limit("NETRUN_HOST_INPUT_WINDOW"),
+            MaximumUnacknowledgedOutputs: Limit("NETRUN_HOST_OUTPUT_WINDOW"),
+            QueueCapacity: Limit("NETRUN_HOST_QUEUE_CAPACITY", 64),
+            MaximumEventsPerOutput: Limit("NETRUN_HOST_EVENTS_PER_OUTPUT"),
+            GraphPageWindow: Limit("NETRUN_HOST_GRAPH_PAGE_WINDOW"));
+        limits.Validate();
+        await using var host = new LoopbackHost(new(port, token), new RuntimeHostSessionFactory(streamingLimits: limits));
         Console.Out.WriteLine($"NETRUN Host listening on loopback:{host.Port}");
         await host.RunAsync(shutdown.Token);
         return 0;
@@ -73,4 +82,15 @@ catch (ArgumentException)
 {
     Console.Error.WriteLine("invalid_arguments");
     return 2;
+}
+
+
+// Zero explicitly disables a quota for backward compatibility with legacy peers.
+static int Limit(string name, int defaultValue = 0)
+{
+    var raw = Environment.GetEnvironmentVariable(name);
+    if (string.IsNullOrWhiteSpace(raw)) return defaultValue;
+    if (!int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value < 0 || value > 65536)
+        throw new ArgumentException("Invalid NETRUN host limit.", name);
+    return value;
 }

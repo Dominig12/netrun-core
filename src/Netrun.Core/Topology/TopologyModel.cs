@@ -27,8 +27,10 @@ public enum PhysicalLinkKind
 /// <param name="BindingPolicy">Stable сохраняет игровой контракт; Nearest является явным изменением политики.</param>
 /// <param name="MaxNodes">Максимум зарегистрированных узлов одной публикации.</param>
 /// <param name="MaxPhysicalEdges">Максимум материализованных кабелей; quantum clique в лимит не входит.</param>
+/// <param name="MaxParallelism">Bounded worker count for independent sector spatial construction; 1 runs serially.</param>
 public sealed record TopologyOptions(int ApcNeighbors = 3, int LinkTilesPerDs = 15, int RelayLatencyDs = 3,
-    BindingPolicy BindingPolicy = BindingPolicy.Stable, int MaxNodes = int.MaxValue, int MaxPhysicalEdges = int.MaxValue);
+    BindingPolicy BindingPolicy = BindingPolicy.Stable, int MaxNodes = int.MaxValue, int MaxPhysicalEdges = int.MaxValue,
+    int MaxParallelism = 4);
 
 /// <summary>Безопасный отказ построения: не содержит native-данных или содержимого входных записей.</summary>
 /// <param name="code">Стабильная причина отказа для диагностики.</param>

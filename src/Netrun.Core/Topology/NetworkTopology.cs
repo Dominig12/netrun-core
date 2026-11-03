@@ -37,6 +37,7 @@ public sealed class NetworkTopology
         _options = options ?? new TopologyOptions();
         if (_options.ApcNeighbors is < 1 or > 128 || _options.LinkTilesPerDs < 1 ||
             _options.RelayLatencyDs < 1 || _options.MaxNodes < 1 || _options.MaxPhysicalEdges < 0 ||
+            _options.MaxParallelism is < 1 or > 32 ||
             !Enum.IsDefined(_options.BindingPolicy))
             throw new TopologyException("invalid_topology_options");
     }
@@ -148,8 +149,26 @@ public sealed class NetworkTopology
             bindings.Add(key, anchor);
             AddEdge(key, anchor, PhysicalLinkKind.Endpoint, Distance(state, nodes[anchor].State, floors));
         }
-        foreach (var sector in indices.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            ConnectApcs(sector.Value, AddApcEdge);
+        // Each sector owns a separate mutable spatial component index and disjoint APCs.
+        // Workers never modify graph publication or a shared edge collection.
+        var sectorsToConnect = indices.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Value).ToArray();
+        var sectorEdges = new List<CableCandidate>[sectorsToConnect.Length];
+        void ConnectSector(int index)
+        {
+            var candidates = new List<CableCandidate>();
+            ConnectApcs(sectorsToConnect[index], candidates.Add);
+            sectorEdges[index] = candidates;
+        }
+        if (_options.MaxParallelism > 1 && sectorsToConnect.Length > 1 &&
+            sectorsToConnect.Sum(sector => sector.Points.Length) >= 32)
+            Parallel.For(0, sectorsToConnect.Length,
+                new ParallelOptions { MaxDegreeOfParallelism = _options.MaxParallelism }, ConnectSector);
+        else
+            for (var i = 0; i < sectorsToConnect.Length; i++) ConnectSector(i);
+        // Apply to the graph on the owner thread, preserving the old sector/edge order.
+        foreach (var candidates in sectorEdges)
+            foreach (var candidate in candidates)
+                AddApcEdge(candidate);
 
         edges.Sort((first, second) => CompareEdges(first, second, nodes));
         var adjacency = nodes.Keys.ToDictionary(key => key, _ => new List<PhysicalEdge>());
@@ -241,7 +260,7 @@ public sealed class NetworkTopology
     }
 
     /// <summary>Индексирует расположенные APC по сектору и питаемой base area; offline APC сохраняются.</summary>
-    private static Dictionary<string, SectorIndex> BuildIndices(Dictionary<NodeKey, NodeFact> nodes,
+    private Dictionary<string, SectorIndex> BuildIndices(Dictionary<NodeKey, NodeFact> nodes,
         IReadOnlyList<NodeKey> ordered, Dictionary<string, Dictionary<int, int>> floors)
     {
         var groups = new Dictionary<string, List<SpatialPoint>>(StringComparer.Ordinal);
@@ -255,16 +274,27 @@ public sealed class NetworkTopology
                 groups.Add(sector, points = []);
             points.Add(new SpatialPoint(points.Count, key, state.Address, position.X, position.Y, floors[sector][position.Z]));
         }
-        var result = new Dictionary<string, SectorIndex>(StringComparer.Ordinal);
-        foreach (var (sector, points) in groups)
+        // Sector indexes have disjoint workspaces. Compute them on parallel cores,
+        // then publish in the original deterministic insertion order.
+        var sectors = groups.ToArray();
+        var built = new SectorIndex[sectors.Length];
+        void BuildSector(int index)
         {
+            var points = sectors[index].Value;
             var native = new Dictionary<string, SpatialIndex>(StringComparer.Ordinal);
             foreach (var group in points.GroupBy(point => nodes[point.Key].State.Network?.SuppliedAreaId ??
                 nodes[point.Key].State.Network?.BaseAreaId, StringComparer.Ordinal))
                 if (group.Key is { } area)
                     native.Add(area, new SpatialIndex(group));
-            result.Add(sector, new SectorIndex(points.ToArray(), new SpatialIndex(points), native));
+            built[index] = new SectorIndex(points.ToArray(), new SpatialIndex(points), native);
         }
+        if (_options.MaxParallelism > 1 && sectors.Length > 1 && sectors.Sum(group => group.Value.Count) >= 32)
+            Parallel.For(0, sectors.Length, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxParallelism }, BuildSector);
+        else
+            for (var i = 0; i < sectors.Length; i++) BuildSector(i);
+        var result = new Dictionary<string, SectorIndex>(StringComparer.Ordinal);
+        for (var i = 0; i < sectors.Length; i++)
+            result.Add(sectors[i].Key, built[i]);
         return result;
     }
 

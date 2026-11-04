@@ -66,7 +66,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
     private EntityNavigationBroker? _entityNavigation;
     /// <summary>Число независимых work/output lanes одного последовательного владельца.</summary>
     private const int LaneCount = 6;
-    private const int OutputLaneCount = 12;
+    private const int OutputLaneCount = 13;
     /// <summary>Первый work producer следующего Pump; единичный budget справедлив между calls.</summary>
     private int _nextPumpLane;
     /// <summary>Независимый round-robin transport/discovery/projection outputs.</summary>
@@ -428,8 +428,11 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
                     case SubmitModuleRequest module:
                         admission = _tasks!.Enqueue(module.Request.Key, new EntityWork(module), ModuleRequestRules.Fingerprint(module.Request)!);
                         break;
-                    case PublishBotFact or RemoveBot or SubmitBotOrder or RememberBotAttacker or WakeBot or FinishBotEffect:
+                    case ConfigureBot or RemoveBot or SubmitBotOrder or RememberBotAttacker or WakeBot or FinishBotEffect or QueryBot:
                         admission = EnqueueBot(input.Command);
+                        break;
+                    case ConfigureConsoleSession or RemoveConsoleSession or QueryConsoleSession or SetConsoleWorkspace:
+                        admission = EnqueueConsole(input.Command);
                         break;
                     case ConfigureBackbone backbone:
                         _availability.SetBackbone(backbone.Enabled);
@@ -770,6 +773,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
         if (lane == 9 && _storageEvents.TryDequeue(out transportEvent)) return true;
         if (lane == 10 && TryCombatEvent(out transportEvent)) return true;
         if (lane == 11 && TryBotEvent(out transportEvent)) return true;
+        if (lane == 12 && TryConsoleEvent(out transportEvent)) return true;
         transportEvent = null;
         return false;
     }
@@ -784,6 +788,7 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
         StopStorage();
         StopCombat();
         StopBots();
+        StopConsoleSessions();
         _tasks?.Dispose();
         _tasks = null;
         _entities?.Dispose();

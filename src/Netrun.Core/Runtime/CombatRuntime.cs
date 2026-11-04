@@ -197,6 +197,7 @@ public sealed partial class NetworkRuntime
                 _pendingCombatKey = new("combat.effects", ++_combatEffectSerial);
             }
             var effect = _pendingCombatEffect!;
+            MarkBotReperceive(effect.Actor);
             if (_combatEvents.Count >= CombatOutputLimit) break;
             var view = _entities!.Read(effect.Actor);
             if (view is not null && ValidCombatContact(effect, view))

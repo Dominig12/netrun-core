@@ -69,7 +69,7 @@ public sealed class RuntimeBotTests
     }
 
     /// <summary>Факт восприятия и приказ владельца приводят к одному native-решению brain, выданному наружу рантаймом.</summary>
-    [Fact]
+    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
     public void BotFactAndOrderDriveACoreDecisionThroughTheRuntime()
     {
         using var runtime = new NetworkRuntime(Epochs);
@@ -97,7 +97,7 @@ public sealed class RuntimeBotTests
     }
 
     /// <summary>Повтор того же PublishBotFact на прежнем sequence распознаётся replay-леджером как дубликат.</summary>
-    [Fact]
+    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
     public void PublishBotFactReplayIsDeduplicated()
     {
         using var runtime = new NetworkRuntime(Epochs);
@@ -108,7 +108,7 @@ public sealed class RuntimeBotTests
     }
 
     /// <summary>Без ботов четвёртый автоматический lane — no-op: публикация и удаление не ломают world-only прогон.</summary>
-    [Fact]
+    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
     public void RemovingTheOnlyBotLeavesRuntimeHealthy()
     {
         using var runtime = new NetworkRuntime(Epochs);

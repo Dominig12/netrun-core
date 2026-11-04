@@ -350,6 +350,13 @@ public sealed partial class BotEngine : IDisposable
             brain.NextWake == int.MaxValue ? null : brain.NextWake);
     }
 
+    /// <summary>Первый hop source-tree к узлу для Core-инициированного пошагового движения; не планирует и не думает.</summary>
+    public NodeKey? FirstHop(BotKey key, NodeKey destination)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return Find(key, out var brain) ? Node(brain, destination)?.FirstHop : null;
+    }
+
     /// <summary>Trusted combat event помечает exact attacker generation; текст сообщения приказом не является.</summary>
     public bool RememberAttacker(BotKey key, ActorKey attacker)
     {

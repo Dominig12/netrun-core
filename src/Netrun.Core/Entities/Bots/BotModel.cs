@@ -48,6 +48,8 @@ public sealed record BotNodeFact(NodeKey Key, string? NetworkId, string Type)
     public bool CanRoute { get; init; }
     /// <summary>Стоимость по source-tree для ранжирования равного salvage.</summary>
     public double RouteCost { get; init; } = double.PositiveInfinity;
+    /// <summary>Первый hop source-tree к узлу (сосед текущего узла); null для себя и недостижимых. Нужен Core для пошагового движения к далёкой цели.</summary>
+    public NodeKey? FirstHop { get; init; }
     /// <summary>Первый frontier на существующем пути к этому узлу.</summary>
     public NodeKey? Frontier { get; init; }
     /// <summary>Сетевые врата запрещают текущий breach.</summary>

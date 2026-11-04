@@ -229,7 +229,7 @@ public static partial class RuntimeJson
         "service_discover" or "service_discovery_cancel" or "projection_query" or "projection_cancel" or "anchor_query" or
         "graph_sync_start" or "graph_sync_continue" or "graph_sync_cancel" or "service_watch" or "service_unwatch" or
         "entity_navigation_query" or "entity_navigation_cancel" or "entity_operation" or "entity_effect_result" or "module_request" ||
-        IsStorageWireKind(kind) || IsCombatWireKind(kind) || IsBotWireKind(kind);
+        IsStorageWireKind(kind) || IsCombatWireKind(kind) || IsBotWireKind(kind) || IsConsoleWireKind(kind);
 
     /// <summary>Разбирает allowlisted логическую команду с точным набором обязательных nullable-полей.</summary>
     private static RuntimeCommand ReadCommand(JsonElement entry)
@@ -240,6 +240,8 @@ public static partial class RuntimeJson
             case "combat_intent" or "combat_actor_configure": return ReadCombatCommand(entry);
             case "bot_configure" or "bot_remove" or "bot_order" or "bot_attacker" or "bot_wake" or "bot_effect_result" or "bot_query":
                 return ReadBotCommand(entry);
+            case "console_configure" or "console_remove" or "console_query" or "console_set_workspace":
+                return ReadConsoleCommand(entry);
             case "module_request":
                 Fields(entry, "kind", "request_id", "module_id", "operation", "payload");
                 var moduleRequest = new ModuleRequest(RequestId(entry.GetProperty("request_id")), Text(entry.GetProperty("module_id"), 64),

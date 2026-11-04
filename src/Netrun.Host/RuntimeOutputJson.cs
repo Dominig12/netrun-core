@@ -6,7 +6,6 @@ using Netrun.Core.Transport;
 using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
 using Netrun.Core.Entities;
-using Netrun.Core.Entities.Bots;
 using Netrun.Core.Scheduling;
 using Netrun.Core.Plugins;
 using Netrun.Protocol;
@@ -208,10 +207,16 @@ internal static class RuntimeOutputJson
                     writer.WritePropertyName("view"); RuntimeJson.WriteBotView(writer, bot.View);
                     break;
                 case BotNativeDecision bot:
-                    if (bot.Effect.Action is not (BotWarning or BotCancelAction))
-                        throw new ProtocolException("bot_native_action_invalid");
+                    // Every brain decision is serialized; DM runs the native-presentation kinds and replies
+                    // "uncertain" for the physical/compute kinds whose Core-owner routing is not wired yet.
                     writer.WriteString("kind", "bot_native_decision");
                     writer.WritePropertyName("effect"); RuntimeJson.WriteBotEffect(writer, bot.Effect);
+                    break;
+                case ConsoleSessionCompleted console:
+                    writer.WriteString("kind", "console_completed");
+                    writer.WritePropertyName("session"); RuntimeJson.WriteConsoleSessionKey(writer, console.Session);
+                    writer.WriteBoolean("accepted", console.Accepted); writer.WriteString("code", console.Code);
+                    writer.WritePropertyName("view"); RuntimeJson.WriteConsoleSessionView(writer, console.View);
                     break;
                 case ModuleCompleted module:
                     writer.WriteString("kind", "module_result"); writer.WriteString("module_id", module.ModuleId);

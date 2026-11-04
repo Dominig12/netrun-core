@@ -25,6 +25,8 @@ public sealed partial class NetworkRuntime
         internal int EffectCursor, ProjectionCursor;
         internal bool CombatMovePrepared, EntityEffectResolved;
         internal TransportActionResult? EntityEffectOutcome;
+        /// <summary>Незавершённый cooperative снимок восприятия бота ConfigureBot; продолжается тем же FIFO head.</summary>
+        internal BotSnapshotWork? BotSnapshot;
     }
 
     /// <summary>Authoritative состояние всех resident/bot/ICE процессов binding.</summary>
@@ -60,6 +62,7 @@ public sealed partial class NetworkRuntime
         InitializeStorage();
         InitializeCombat();
         InitializeBots();
+        InitializeConsoleSessions();
         _moduleSessions = _pluginRegistry.Modules.CreateSessions(new ModuleContext(_epochs.Binding,
             key => _entities.Read(key), () => SimulationTimeDs));
     }
@@ -125,6 +128,7 @@ public sealed partial class NetworkRuntime
         if (IsStorageCommand(work.Command)) return ExecuteStorageTask(work, budget);
         if (IsCombatCommand(work.Command)) return ExecuteCombatTask(work, budget);
         if (IsBotCommand(work.Command)) return ExecuteBotTask(work, budget);
+        if (IsConsoleCommand(work.Command)) return ExecuteConsoleTask(work, budget);
         if (work.Command is SubmitModuleRequest module) return ExecuteModuleTask(work, module.Request, budget);
         if (work.Command is FinishEntityEffect finish)
         {
@@ -139,6 +143,7 @@ public sealed partial class NetworkRuntime
             if (work.EntityEffectOutcome.Accepted && !work.EntityEffectResolved)
             {
                 ResolveEntityMove(finish.Result.Actor);
+                MarkBotReperceive(finish.Result.Actor);
                 work.EntityEffectResolved = true;
             }
             if (effectWork < budget) effectWork += DrainCombatEffects(budget - effectWork);

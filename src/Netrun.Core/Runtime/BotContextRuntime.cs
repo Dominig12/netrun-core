@@ -444,6 +444,7 @@ public sealed partial class NetworkRuntime
             CanTraverse = traversable,
             CanPlanVisit = online && reachable && traversable,
             CanRoute = reachable,
+            FirstHop = work.NextHop(node),
             RouteCost = reachable ? cost : double.PositiveInfinity,
             DirectEntry = traversable && online && node != work.Self.Node &&
                 (work.Direct.Contains(node) || BotRelayAvailable(work, work.Self.Node) && BotRelayAvailable(work, node)),

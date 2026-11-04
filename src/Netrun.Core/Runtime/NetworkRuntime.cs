@@ -299,12 +299,12 @@ public sealed partial class NetworkRuntime : INetworkWorldView, IDisposable
         if (input.Command is ApplyWorld pluginWorld)
         {
             var normalized = _pluginRegistry.Normalize(pluginWorld.Entries, _core.MaxEntries);
-            if (normalized is null) return Result(ApplyStatus.Rejected, "invalid_runtime_input");
+            if (normalized is null) return Result(ApplyStatus.Rejected, "invalid_runtime_input.plugin_normalize");
             input = input with { Command = new ApplyWorld(normalized) };
         }
         var fingerprint = RuntimeFingerprint.Compute(input, _core.MaxEntries);
         if (fingerprint is null)
-            return Result(ApplyStatus.Rejected, "invalid_runtime_input");
+            return Result(ApplyStatus.Rejected, "invalid_runtime_input." + (input.Command is null ? "none" : input.Command.GetType().Name));
         if (input.Sequence <= AppliedSequence)
         {
             if (_recent.TryGetValue(input.Sequence, out var previous) &&

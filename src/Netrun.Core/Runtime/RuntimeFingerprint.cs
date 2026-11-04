@@ -180,6 +180,11 @@ internal static class RuntimeFingerprint
                     if (botFingerprint is null) return null;
                     writer.Write((byte)24); writer.Write(botFingerprint);
                     break;
+                case ConfigureConsoleSession or RemoveConsoleSession or QueryConsoleSession or SetConsoleWorkspace:
+                    var consoleFingerprint = NetworkRuntime.ConsoleCommandFingerprint(input.Command);
+                    if (consoleFingerprint is null) return null;
+                    writer.Write((byte)25); writer.Write(consoleFingerprint);
+                    break;
                 default:
                     return null;
             }

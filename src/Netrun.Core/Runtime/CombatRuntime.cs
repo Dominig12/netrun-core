@@ -38,7 +38,7 @@ public sealed partial class NetworkRuntime
     /// <summary>При output pressure следующий FIFO intent не может обогнать не применённый combat effect.</summary>
     private bool CombatEffectsPending => _pendingCombatEffect is not null || _combat?.EffectCount > 0;
     /// <summary>Combat state создаётся после actor registry; profile сам не выдаёт ни одного executable.</summary>
-    private void InitializeCombat() => _combat = new CombatSimulation();
+    private void InitializeCombat() => _combat = new CombatSimulation(options: _options.Combat);
 
     /// <summary>Закрывает binding без повторения staged эффекта при reconnect.</summary>
     private void StopCombat()

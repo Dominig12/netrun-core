@@ -6,6 +6,8 @@ using Netrun.Core.Discovery;
 using Netrun.Core.Projection;
 using Netrun.Core.Plugins;
 using Netrun.Core.Entities;
+using Netrun.Core.Entities.Bots;
+using Netrun.Core.Entities.Combat;
 using Netrun.Core.Scheduling;
 using Netrun.Core.Storage;
 
@@ -154,10 +156,13 @@ public sealed record RuntimeResult(ApplyResult Apply, MirrorSyncState SyncState,
 /// <param name="Entities">Пределы registry и actor projections.</param>
 /// <param name="Tasks">Пределы общей FIFO очереди и terminal outcomes.</param>
 /// <param name="Storage">Ограничения принадлежащих ядру файлов/носителей и их immutable проекций.</param>
+/// <param name="Combat">Настраиваемые тайминги CombatSimulation; штатные значения повторяют turn_combat.dm.</param>
+/// <param name="Bots">Ёмкости и тюнинг brain-owner; штатные значения не меняют поведения AI.</param>
 public sealed record RuntimeOptions(CoreLimits? Core = null, TopologyOptions? Topology = null,
     RouterOptions? Router = null, TransportOptions? Transport = null, bool DeferTopologyBuild = false,
     int PumpWorkBudget = int.MaxValue, CommunicationOptions? Communication = null, DiscoveryOptions? Discovery = null,
     ProjectionOptions? Projection = null, SourceTreeOptions? SourceTrees = null,
     GraphSynchronizationOptions? GraphSynchronization = null, IReadOnlyList<INetrunPlugin>? Plugins = null,
     EntityNavigationOptions? EntityNavigation = null, EntityWorldOptions? Entities = null,
-    CoreTaskQueueOptions? Tasks = null, StorageWorldOptions? Storage = null);
+    CoreTaskQueueOptions? Tasks = null, StorageWorldOptions? Storage = null,
+    CombatOptions? Combat = null, BotEngineOptions? Bots = null);

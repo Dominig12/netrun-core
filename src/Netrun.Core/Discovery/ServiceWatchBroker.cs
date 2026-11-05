@@ -164,13 +164,8 @@ public sealed class ServiceWatchBroker : IDisposable
         {
             var sourceKey = new ServiceKey(before.ServiceId, before.Generation);
             if (_bySource.TryGetValue(sourceKey, out var sourceWatches))
-            {
                 foreach (var key in sourceWatches)
-                {
-                    var watch = _active[key];
                     RevokeSource(_active[key]);
-                }
-            }
         }
         if (before is not null && (after is null || before.Generation != after.Generation ||
             before.Family != after.Family || before.Tag != after.Tag))

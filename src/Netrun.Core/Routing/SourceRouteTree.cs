@@ -91,17 +91,6 @@ public sealed class SourceRouteTreeProvider
     /// <summary>Значение LRU с независимым immutable результатом.</summary>
     private sealed record CacheItem(CacheKey Key, SourceRouteTree Tree);
 
-    /// <summary>Сначала конечная стоимость, затем ordinal адрес: такой же порядок извлечения, как у NetworkRouter.</summary>
-    private readonly record struct QueuePriority(double Cost, string Address) : IComparable<QueuePriority>
-    {
-        /// <summary>Фиксирует воспроизводимый первый predecessor при равной стоимости без сравнения NodeId.</summary>
-        public int CompareTo(QueuePriority other)
-        {
-            var comparison = Cost.CompareTo(other.Cost);
-            return comparison != 0 ? comparison : StringComparer.Ordinal.Compare(Address, other.Address);
-        }
-    }
-
     /// <summary>Optional текущая доступность; null выбирает flags immutable graph.</summary>
     private readonly INetworkAvailability? _availability;
     /// <summary>Optional чистая ревизуемая политика положительных стоимостей.</summary>
@@ -173,101 +162,33 @@ public sealed class SourceRouteTreeProvider
         finally { _building = false; }
     }
 
-    /// <summary>Обходит reachable graph один раз; uniform quantum bucket расширяется только от самого дешёвого допустимого relay.</summary>
+    /// <summary>
+    /// Строит всё дерево источника через общий <see cref="RouteSearch"/> (без ранней остановки);
+    /// forwarding, uniform quantum bucket и правило равных стоимостей те же, что и у point-to-point router.
+    /// Discovery включает offline цели без forwarding через них; offline источник знает только себя.
+    /// </summary>
     private SourceRouteTree Search(GraphSnapshot graph, NodeKey source, RouteKind mode, ulong availabilityVersion)
     {
         if (!graph.Nodes.ContainsKey(source))
             return Result(RouteStatus.StaleEndpoint, []);
-        var sampled = new Dictionary<NodeKey, NodeAvailability>();
-        var sourceState = State(source);
+        var sourceState = RouteSearch.Availability(graph, _availability, source);
         if (!sourceState.Present)
             return Result(RouteStatus.StaleEndpoint, []);
         if (!sourceState.Online && mode == RouteKind.Machine)
             return Result(RouteStatus.Unreachable, []);
 
-        var entries = new Dictionary<NodeKey, SourceRouteEntry> { [source] = new(null, 0, false) };
+        var entries = new Dictionary<NodeKey, SourceRouteEntry>();
         if (!sourceState.Online)
+        {
+            entries[source] = new SourceRouteEntry(null, 0, false);
             return Result(RouteStatus.Found, entries);
-        var settled = new HashSet<NodeKey>();
-        var queue = new PriorityQueue<NodeKey, QueuePriority>();
-        queue.Enqueue(source, new QueuePriority(0, graph.Nodes[source].State.Address));
-        var relaysExpanded = false;
-        var backboneEnabled = _availability?.BackboneEnabled ?? true;
-        while (queue.TryDequeue(out var current, out var priority))
-        {
-            if (settled.Contains(current) || priority.Cost != entries[current].LatencyDs)
-                continue;
-            settled.Add(current);
-            var currentState = State(current);
-            if (!currentState.Present || !currentState.Online)
-                continue;
-            foreach (var edge in graph.Adjacency[current])
-            {
-                var neighbor = edge.From == current ? edge.To : edge.From;
-                if (settled.Contains(neighbor))
-                    continue;
-                var state = State(neighbor);
-                if (!state.Present || mode == RouteKind.Machine && !state.Online)
-                    continue;
-                Relax(current, neighbor, priority.Cost, _costs?.PhysicalCost(edge) ?? edge.LatencyDs, false);
-            }
-            if (relaysExpanded || !backboneEnabled || !IsRelay(current) || !currentState.RelayOperational)
-                continue;
-            relaysExpanded = true;
-            var relayCost = PositiveCost(_costs?.RelayCost(graph) ?? graph.RelayLatencyDs);
-            foreach (var relay in graph.RelayBucket)
-            {
-                if (settled.Contains(relay))
-                    continue;
-                var state = State(relay);
-                if (!state.Present || !state.RelayOperational || mode == RouteKind.Machine && !state.Online)
-                    continue;
-                Relax(current, relay, priority.Cost, relayCost, true);
-            }
         }
+        RouteSearch.Run(graph, source, mode, null, _availability, _costs, _options.MaxQueueEntries, entries);
         return Result(RouteStatus.Found, entries);
-
-        // Одна стабильная выборка на поколение; удалённое поколение не становится offline discovery целью.
-        NodeAvailability State(NodeKey key)
-        {
-            if (!sampled.TryGetValue(key, out var value))
-            {
-                var state = graph.Nodes[key].State;
-                value = _availability?.Get(key) ?? new NodeAvailability(state.Online, state.Network?.RelayOperational ?? true);
-                sampled.Add(key, value);
-            }
-            return value;
-        }
-
-        // Сохранённый relay флаг без физического положения не добавляет членство в quantum bucket.
-        bool IsRelay(NodeKey key) => graph.Nodes[key].State.Position is not null &&
-            graph.Nodes[key].State.Network?.IsNtnetRelay == true;
-
-        // Равная стоимость не меняет predecessor или Quantum; первый выбор совпадает с pair router.
-        void Relax(NodeKey from, NodeKey to, double currentCost, double edgeCost, bool quantum)
-        {
-            var total = currentCost + PositiveCost(edgeCost);
-            if (!double.IsFinite(total))
-                throw new RoutingException("invalid_route_cost");
-            if (entries.TryGetValue(to, out var prior) && prior.LatencyDs <= total)
-                return;
-            if (queue.Count >= _options.MaxQueueEntries)
-                throw new RoutingException("route_queue_capacity");
-            entries[to] = new SourceRouteEntry(from, total, quantum || entries[from].Quantum);
-            queue.Enqueue(to, new QueuePriority(total, graph.Nodes[to].State.Address));
-        }
 
         // Копирование на явной границе публикации отделяет результат от workspace Dijkstra.
         SourceRouteTree Result(RouteStatus status, Dictionary<NodeKey, SourceRouteEntry> result) =>
             new(source, status, graph.Version, graph.InputSequence, availabilityVersion, result);
-    }
-
-    /// <summary>Не допускает NaN, Infinity или неположительную стоимость в приоритеты и итоговые скаляры.</summary>
-    private static double PositiveCost(double cost)
-    {
-        if (!double.IsFinite(cost) || cost <= 0)
-            throw new RoutingException("invalid_route_cost");
-        return cost;
     }
 
     /// <summary>Добавляет одно дерево и вытесняет LRU сверх общего лимита; graph и workspace здесь не удерживаются.</summary>

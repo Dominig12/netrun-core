@@ -99,3 +99,25 @@ public sealed record CombatProgramContext(ActorKey Source, CombatActorFact Targe
 public sealed record CombatProgramStatus(double? ShieldFactor = null, int ShieldTurns = 0, int StunTurns = 0);
 /// <summary>Результат полиморфного Apply не меняет shared definition и не выполняет native эффектов.</summary>
 public sealed record CombatProgramApplication(ValueList<CombatEffect> Effects, CombatProgramStatus? Status = null);
+
+/// <summary>
+/// Настраиваемые тайминги боя. Штатные значения точно повторяют turn_combat.dm, поэтому
+/// конфигурация по умолчанию не меняет поведения; MaximumAp остаётся фундаментальной const.
+/// </summary>
+public sealed record CombatOptions(
+    /// <summary>Полный ход решения в децисекундах (двенадцать секунд по умолчанию).</summary>
+    int DecisionTimeDs = 120,
+    /// <summary>Число полностью тихих раундов, закрывающих бой.</summary>
+    int IdleRounds = 3,
+    /// <summary>Быстрый телеграф подготовки внутри активной очереди.</summary>
+    int TelegraphInCombatDs = 5,
+    /// <summary>Минимальный телеграф вне боя; ниже WindupDs программы не опускается.</summary>
+    int TelegraphMinDs = 20,
+    /// <summary>Общий wall-clock лаг между запусками программ вне очереди.</summary>
+    int GlobalProgramCooldownDs = 5,
+    /// <summary>Задержка пробуждения резидента; ICE и крепость просыпаются немедленно.</summary>
+    int EntityWakeDs = 5,
+    /// <summary>Бюджет шагов продвижения очереди на одного участника.</summary>
+    int AdvancePassesPerParticipant = 2,
+    /// <summary>Верхняя граница запрошенного масштаба урона программы.</summary>
+    double MaximumDamageScale = 1000);

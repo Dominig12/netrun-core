@@ -427,6 +427,10 @@ public sealed class StorageWorld
     private StorageResult OfferFile(ActorKey actor, Disk source, OfferStorageFile offer)
     {
         if (!_stores.TryGetValue(offer.Recipient, out var destination) || Top(source, offer.File) is not { } original) return Failure("file_unavailable");
+        // Снимаем истёкшие rate-limit отметки, чтобы карта не росла по числу отправителей за всё время binding.
+        if (_nextOffers.Count > 0)
+            foreach (var stale in _nextOffers.Where(entry => entry.Value <= _now).Select(entry => entry.Key).ToArray())
+                _nextOffers.Remove(stale);
         if (!Has(source, actor, StorageRights.Read | StorageRights.Transfer) || _now < _nextOffers.GetValueOrDefault(actor) ||
             !ValidName(offer.SenderName)) return Failure("file_offer_denied");
         // Истёкшие письма освобождают snapshots до admission нового письма, даже если expiry intent ещё в FIFO.

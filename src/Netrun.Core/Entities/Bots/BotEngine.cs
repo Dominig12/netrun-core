@@ -98,6 +98,11 @@ public sealed partial class BotEngine : IDisposable
     }
 
     private readonly BotEngineOptions _options;
+    private readonly BotTuningOptions _tuning;
+    private readonly BotGoalTimings _goals;
+    private readonly BotMemoryTimings _memory;
+    private readonly BotCombatTuning _combatTuning;
+    private readonly BotSalvageWeights _salvage;
     private readonly Dictionary<string, BotProfile> _profiles;
     private readonly Dictionary<string, CombatProgram> _programs;
     private readonly Dictionary<string, Brain> _brains = new(StringComparer.Ordinal);
@@ -120,6 +125,14 @@ public sealed partial class BotEngine : IDisposable
         _options = options ?? new();
         if (_options.MaxBots < 1 || _options.MaxEffects < 1 || _options.MaxTrackedIds < 1)
             throw new ArgumentException("Invalid bot options.", nameof(options));
+        _tuning = _options.Tuning ?? new();
+        _goals = _tuning.Goals ?? new();
+        _memory = _tuning.Memory ?? new();
+        _combatTuning = _tuning.Combat ?? new();
+        _salvage = _tuning.Salvage ?? new();
+        if (_tuning.MaxActiveInvasions < 0 || _tuning.SabotageHoldDs < 0 || _tuning.IncidentClaimMinSeverity < 0 ||
+            _tuning.IncidentClaimMinReports < 0 || _tuning.ThinkJitterDs < 0 || _tuning.ReportTruncateChars < 0)
+            throw new ArgumentException("Invalid bot tuning.", nameof(options));
         _profiles = (profiles ?? BotProfiles.CreateDefaults()).ToDictionary(profile => profile.Id, StringComparer.Ordinal);
         _programs = (programs ?? CombatPrograms.CreateDefaults()).ToDictionary(program => program.Id, StringComparer.Ordinal);
     }
@@ -236,13 +249,13 @@ public sealed partial class BotEngine : IDisposable
         brain.Order = order.Kind is "collect" or "hack" ? new("guard", order.Target) : order;
         switch (order.Kind)
         {
-            case "recall": Push(brain, "recall", null, null, 600); break;
-            case "terminate": Push(brain, "terminate", null, null, 1200); break;
-            case "guard": Push(brain, "guard", order.Target, null, 300); break;
-            case "collect": Push(brain, "salvage", order.Target, null, 900); break;
-            case "patrol": Push(brain, "patrol", null, null, 900); break;
-            case "command": Push(brain, "command", order.Target, order.CommandId, 1200); break;
-            case "hack": Push(brain, "hack", order.Target, order.CommandId, 3000); break;
+            case "recall": Push(brain, "recall", null, null, _goals.Recall); break;
+            case "terminate": Push(brain, "terminate", null, null, _goals.Terminate); break;
+            case "guard": Push(brain, "guard", order.Target, null, _goals.Guard); break;
+            case "collect": Push(brain, "salvage", order.Target, null, _goals.Salvage); break;
+            case "patrol": Push(brain, "patrol", null, null, _goals.Patrol); break;
+            case "command": Push(brain, "command", order.Target, order.CommandId, _goals.Command); break;
+            case "hack": Push(brain, "hack", order.Target, order.CommandId, _goals.Hack); break;
         }
         AdmitWake(brain);
         return true;
@@ -361,7 +374,7 @@ public sealed partial class BotEngine : IDisposable
     public bool RememberAttacker(BotKey key, ActorKey attacker)
     {
         if (!Find(key, out var brain) || attacker == brain.Fact.Actor.Actor) return false;
-        brain.Enemies.Put(attacker, Later(600));
+        brain.Enemies.Put(attacker, Later(_memory.EnemyMemory));
         AdmitWake(brain);
         return true;
     }

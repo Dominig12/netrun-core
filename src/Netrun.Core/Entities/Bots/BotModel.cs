@@ -202,4 +202,53 @@ public sealed record BotGoalView(ulong Serial, string Kind, NodeKey? Target, str
 
 /// <summary>Bounded actor/output slots; один Advance work unit обслуживает одну FIFO wake task.</summary>
 public sealed record BotEngineOptions(int MaxBots = int.MaxValue, int MaxEffects = int.MaxValue,
-    int MaxTrackedIds = int.MaxValue);
+    int MaxTrackedIds = int.MaxValue, BotTuningOptions? Tuning = null);
+
+/// <summary>Сроки преследования цели по типу (децисекунды); штатные значения из DM brain/goals.</summary>
+public sealed record BotGoalTimings(
+    int Guard = 300, int Patrol = 900, int Salvage = 900, int Travel = 900,
+    int Repair = 1200, int Survey = 1200, int Hack = 3000, int Invasion = 3000,
+    int Investigate = 1800, int PolicePatrol = 1200, int RecycleDeposit = 1200,
+    int Depart = 900, int Recall = 600, int Terminate = 1200, int Command = 1200,
+    int RecycleWait = 600);
+
+/// <summary>Длительности памяти, окон предупреждения и дефолтных сроков бота (децисекунды).</summary>
+public sealed record BotMemoryTimings(
+    int HopBlacklist = 1200,            // узел без маршрута/проваленный переход
+    int HackBlacklist = 600,            // проваленный frontier-взлом или отказ разгрузки
+    int FleeBlacklist = 300,            // покинутый при отступлении узел
+    int EnemyMemory = 600,              // срок удержания противника в памяти
+    int DefaultActionDeadline = 300,    // дефолтный срок исполнения действия
+    int GraceWindow = 900,              // grace-окно визитёра перед принудительным уходом
+    int RogueReportCooldown = 200,      // пауза между повторными rogue-инцидентами
+    int InvestigationSettle = 80,       // тихое ожидание отсутствия нарушителя
+    int AttackTelegraph = 20,           // предупреждение игроку до realtime-атаки
+    int PoliceWarning = 50);            // окно police_leave и порог эскалации
+
+/// <summary>Боевые пороги бота: доли integrity и запасной power программы.</summary>
+public sealed record BotCombatTuning(
+    double ShieldIntegrityRatio = 0.5,  // ниже — ставить щит
+    double RepairIntegrityRatio = 0.4,  // ниже — чиниться
+    double StrikePowerFallback = 22);   // запасная мощь strike, если программа не загружена
+
+/// <summary>Веса ценности salvage по типу файла; качество доминирует над размером.</summary>
+public sealed record BotSalvageWeights(
+    int Program = 180, int Daemon = 140, int Bot = 160, int Key = 120,
+    int Techweb = 80, int Other = 10, int FortressBonus = 70, int SizeCap = 20);
+
+/// <summary>
+/// Настраиваемый тюнинг brain-owner. Штатные значения точно повторяют DM brain/goals,
+/// поэтому конфигурация по умолчанию не меняет поведения AI. Структурные границы обхода
+/// (BFS-лимиты, размер очереди целей) остаются фиксированными детерминированными константами.
+/// </summary>
+public sealed record BotTuningOptions(
+    BotGoalTimings? Goals = null,
+    BotMemoryTimings? Memory = null,
+    BotCombatTuning? Combat = null,
+    BotSalvageWeights? Salvage = null,
+    int MaxActiveInvasions = 2,
+    int SabotageHoldDs = 300,
+    int IncidentClaimMinSeverity = 2,
+    int IncidentClaimMinReports = 2,
+    int ThinkJitterDs = 5,
+    int ReportTruncateChars = 1000);

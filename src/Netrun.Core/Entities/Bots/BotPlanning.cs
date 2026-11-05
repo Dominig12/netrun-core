@@ -14,88 +14,88 @@ public sealed partial class BotEngine
     /// <summary>Паттерн сначала выбирает policy, затем profile сохраняет собственный точный приоритет целей.</summary>
     private void Plan(Brain brain)
     {
-        if (brain.Departing) { Push(brain, "depart_network", null, null, 900); return; }
+        if (brain.Departing) { Push(brain, "depart_network", null, null, _goals.Depart); return; }
         var scope = Scope(brain);
         var post = brain.Post ?? brain.Fact.Context.Home;
         switch (brain.Behavior.Strategy)
         {
-            case "guard": Push(brain, "guard", post, null, 300); return;
-            case "patrol": Push(brain, "patrol", null, null, 900); return;
+            case "guard": Push(brain, "guard", post, null, _goals.Guard); return;
+            case "patrol": Push(brain, "patrol", null, null, _goals.Patrol); return;
             case "scavenge":
                 var scavenged = FindSalvage(brain, scope);
-                Push(brain, scavenged is null ? "patrol" : "salvage", scavenged, null, 900);
+                Push(brain, scavenged is null ? "patrol" : "salvage", scavenged, null, scavenged is null ? _goals.Patrol : _goals.Salvage);
                 return;
         }
         if (brain.Fact.Context.Visitor && brain.Fact.Actor.FactionId == "redshift" &&
-            _now >= brain.Fact.Context.NextInvasionDs && brain.Fact.Context.ActiveInvasions < 2)
+            _now >= brain.Fact.Context.NextInvasionDs && brain.Fact.Context.ActiveInvasions < _tuning.MaxActiveInvasions)
         {
             var here = Node(brain, brain.Fact.Actor.Node);
             var invasion = here?.RaidEligible == true && _now >= here.RaidReadyAtDs ? here.Key :
                 Nearby(brain, node => node.RaidEligible && _now >= node.RaidReadyAtDs, null);
-            if (invasion is not null) { Push(brain, "station_invasion", invasion, null, 3000); return; }
+            if (invasion is not null) { Push(brain, "station_invasion", invasion, null, _goals.Invasion); return; }
         }
         switch (brain.Profile.Planner)
         {
             case "raider":
                 var debris = FindSalvage(brain, null);
-                if (debris is not null) { Push(brain, "salvage", debris, null, 900); return; }
+                if (debris is not null) { Push(brain, "salvage", debris, null, _goals.Salvage); return; }
                 var ice = Nearby(brain, node => node.IceCount > 0, null);
-                if (ice is not null) { Push(brain, "travel", ice, null, 900); return; }
+                if (ice is not null) { Push(brain, "travel", ice, null, _goals.Travel); return; }
                 break;
             case "collective":
                 var enemy = Nearby(brain, node => node.Online && node.HasEnemy, null);
-                if (enemy is not null) { Push(brain, "travel", enemy, null, 900); return; }
+                if (enemy is not null) { Push(brain, "travel", enemy, null, _goals.Travel); return; }
                 break;
             case "scavenge":
             case "collect":
                 if (brain.Profile.Planner == "collect" && brain.Order?.Kind == "guard")
-                { Push(brain, "guard", post, null, 300); return; }
+                { Push(brain, "guard", post, null, _goals.Guard); return; }
                 var salvage = FindSalvage(brain, null);
-                if (salvage is not null) { Push(brain, "salvage", salvage, null, 900); return; }
+                if (salvage is not null) { Push(brain, "salvage", salvage, null, _goals.Salvage); return; }
                 break;
             case "repair":
                 var repair = FindRepair(brain, scope);
-                if (repair is not null) { Push(brain, "repair", repair, null, 1200); return; }
+                if (repair is not null) { Push(brain, "repair", repair, null, _goals.Repair); return; }
                 break;
             case "guard":
             case "mender":
-                if (brain.Order?.Kind == "patrol") { Push(brain, "patrol", null, null, 900); return; }
+                if (brain.Order?.Kind == "patrol") { Push(brain, "patrol", null, null, _goals.Patrol); return; }
                 if (brain.Profile.Planner == "mender" && Node(brain, post)?.DamagedFortressModules > 0)
-                    Push(brain, "repair", post, null, 1200);
-                else Push(brain, "guard", post, null, 300);
+                    Push(brain, "repair", post, null, _goals.Repair);
+                else Push(brain, "guard", post, null, _goals.Guard);
                 return;
             case "survey":
-                if (brain.Order?.Kind == "guard") { Push(brain, "guard", post, null, 300); return; }
+                if (brain.Order?.Kind == "guard") { Push(brain, "guard", post, null, _goals.Guard); return; }
                 var survey = PatrolDestination(brain, scope);
-                Push(brain, survey is null ? "guard" : "survey", survey ?? post, survey is null ? null : "scan", survey is null ? 300 : 1200);
+                Push(brain, survey is null ? "guard" : "survey", survey ?? post, survey is null ? null : "scan", survey is null ? _goals.Guard : _goals.Survey);
                 return;
             case "hack":
                 var hack = brain.Order?.Kind == "patrol" && brain.Fact.Context.CanHack ? HackTarget(brain) : null;
-                Push(brain, hack is null ? "guard" : "hack", hack ?? post, null, hack is null ? 300 : 3000);
+                Push(brain, hack is null ? "guard" : "hack", hack ?? post, null, hack is null ? _goals.Guard : _goals.Hack);
                 return;
             case "police":
                 var incident = ClaimIncident(brain);
                 if (incident is not null)
                 {
-                    var investigation = Push(brain, "investigate", incident.Node, null, 1800);
+                    var investigation = Push(brain, "investigate", incident.Node, null, _goals.Investigate);
                     investigation.IncidentId = incident.Id;
                 }
-                else Push(brain, "police_patrol", null, null, 1200);
+                else Push(brain, "police_patrol", null, null, _goals.PolicePatrol);
                 return;
             case "recycle":
                 var server = brain.Fact.Context.Cargo.Count > 0 ? FindServer(brain) : null;
-                if (server is not null) { Push(brain, "recycle_deposit", server, null, 1200); return; }
+                if (server is not null) { Push(brain, "recycle_deposit", server, null, _goals.RecycleDeposit); return; }
                 var recycle = FindSalvage(brain, null, true);
-                if (recycle is not null) { Push(brain, "salvage", recycle, null, 900); return; }
+                if (recycle is not null) { Push(brain, "salvage", recycle, null, _goals.Salvage); return; }
                 Push(brain, "recycling_wait", brain.Fact.Actor.Node, null,
-                    brain.SalvageWaitUntil > _now ? Math.Min(600, brain.SalvageWaitUntil - _now) : 600);
+                    brain.SalvageWaitUntil > _now ? Math.Min(_goals.RecycleWait, brain.SalvageWaitUntil - _now) : _goals.RecycleWait);
                 brain.State = "ожидание обломков или свободного сервера";
                 return;
             case "custom":
-                if (brain.Order?.Kind != "patrol") { Push(brain, "guard", post, null, 300); return; }
+                if (brain.Order?.Kind != "patrol") { Push(brain, "guard", post, null, _goals.Guard); return; }
                 break;
         }
-        Push(brain, "patrol", null, null, 900);
+        Push(brain, "patrol", null, null, _goals.Patrol);
     }
 
     /// <summary>Локальный tactical BFS рассматривает максимум 48 вершин и не вычисляет permissions в DM.</summary>
@@ -134,7 +134,7 @@ public sealed partial class BotEngine
             return 0;
         }
         if (QueueFrontierHack(brain, target)) return 0;
-        brain.Blacklist.Put(target.Key, Later(1200));
+        brain.Blacklist.Put(target.Key, Later(_memory.HopBlacklist));
         return 2;
     }
 
@@ -143,17 +143,23 @@ public sealed partial class BotEngine
     {
         if (!brain.Fact.Context.Visitor || !brain.Fact.Context.CanHack || target.BreachBlocked ||
             Blacklisted(brain, target.Key) || !target.Online || !target.CanRoute) return false;
-        Push(brain, "hack", target.Key, null, 3000, true);
+        Push(brain, "hack", target.Key, null, _goals.Hack, true);
         brain.State = "подбор доступа к следующему узлу";
         return true;
     }
 
     /// <summary>Точные приоритеты salvage: качество → стоимость; machine disk никогда не читается.</summary>
-    public static int SalvageValue(BotFileFact file)
+    public static int SalvageValue(BotFileFact file) => SalvageValue(file, new());
+
+    /// <summary>Параметризованный расчёт ценности; штатные веса повторяют DM и дают тот же порядок.</summary>
+    public static int SalvageValue(BotFileFact file, BotSalvageWeights weights)
     {
         var value = file.Kind switch
-        { "program" => 180, "daemon" => 140, "bot" => 160, "key" => 120, "techweb" or "techweb_link" => 80, _ => 10 };
-        return value + (file.FortressReward ? 70 : 0) + Math.Min(20, Math.Max(0, file.Size));
+        {
+            "program" => weights.Program, "daemon" => weights.Daemon, "bot" => weights.Bot,
+            "key" => weights.Key, "techweb" or "techweb_link" => weights.Techweb, _ => weights.Other
+        };
+        return value + (file.FortressReward ? weights.FortressBonus : 0) + Math.Min(weights.SizeCap, Math.Max(0, file.Size));
     }
 
     /// <summary>Максимум 12 файлов одного cache; recycler сохраняет ближайший fresh-debris deadline.</summary>
@@ -167,7 +173,7 @@ public sealed partial class BotEngine
             if (!file.Transferable || !file.Fits) continue;
             if (brain.Profile.Id == "recycler" && _now < file.RecycleAfterDs)
             { brain.SalvageWaitUntil = brain.SalvageWaitUntil == 0 ? file.RecycleAfterDs : Math.Min(brain.SalvageWaitUntil, file.RecycleAfterDs); continue; }
-            var score = SalvageValue(file);
+            var score = SalvageValue(file, _salvage);
             if (score > value) { best = file; value = score; }
         }
         return best;
@@ -180,7 +186,7 @@ public sealed partial class BotEngine
         var current = Node(brain, brain.Fact.Actor.Node);
         var local = current is null || (stationOnly && current.Isolated) ? null : BestSalvage(brain, current);
         var best = local is null ? null : current;
-        var bestValue = local is null ? -1 : SalvageValue(local);
+        var bestValue = local is null ? -1 : SalvageValue(local, _salvage);
         var bestCost = local is null ? double.PositiveInfinity : 0;
         for (var index = 0; index < Math.Min(24, brain.Debris.Count); index++)
         {
@@ -189,7 +195,7 @@ public sealed partial class BotEngine
             if (node == current || Blacklisted(brain, node.Key) || (stationOnly && node.Isolated) || !InScope(node, scope) || !node.CanPlanVisit || !node.CanRoute) continue;
             var file = BestSalvage(brain, node);
             if (file is null) continue;
-            var value = SalvageValue(file);
+            var value = SalvageValue(file, _salvage);
             if (value > bestValue || value == bestValue && node.RouteCost < bestCost)
             { best = node; bestValue = value; bestCost = node.RouteCost; }
         }
@@ -306,8 +312,8 @@ public sealed partial class BotEngine
         if (brain.Departing || !brain.Fact.Context.Visitor) return;
         brain.Departing = true;
         ClearGoals(brain);
-        brain.ExpiresAt = Later(900);
-        Push(brain, "depart_network", null, null, 900);
+        brain.ExpiresAt = Later(_memory.GraceWindow);
+        Push(brain, "depart_network", null, null, _goals.Depart);
         brain.State = brain.Completed ? "задача выполнена: уход через NTnet" : "срок задания истёк: уход через NTnet";
     }
 
@@ -321,7 +327,8 @@ public sealed partial class BotEngine
         ReleaseIncident(brain);
         foreach (var incident in incidents)
         {
-            if (!incident.Open || incident.ClaimedBy is { } owner && owner != brain.Fact.Key || incident.Severity < 2 && incident.Reports < 2 ||
+            if (!incident.Open || incident.ClaimedBy is { } owner && owner != brain.Fact.Key ||
+                incident.Severity < _tuning.IncidentClaimMinSeverity && incident.Reports < _tuning.IncidentClaimMinReports ||
                 incident.Node is { } node && Blacklisted(brain, node)) continue;
             if (_incidentClaims.TryGetValue(incident.Id, out var claimed) && claimed != brain.Fact.Key && Find(claimed, out _)) continue;
             _incidentClaims[incident.Id] = brain.Fact.Key;

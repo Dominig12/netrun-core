@@ -43,7 +43,7 @@ public sealed partial class NetworkRuntime
     private int BotOutputLimit => _options.Tasks?.MaximumEvents ?? int.MaxValue;
 
     /// <summary>Создаёт пустой brain-owner штатными profile/program; вызывается из InitializeEntities.</summary>
-    private void InitializeBots() => _bots = new BotEngine();
+    private void InitializeBots() => _bots = new BotEngine(_options.Bots);
 
     /// <summary>Закрывает binding без повторного выпуска staged решений при reconnect.</summary>
     private void StopBots()

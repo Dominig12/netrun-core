@@ -52,7 +52,7 @@ public sealed partial class BotEngine
             var rogue = context.Targets.FirstOrDefault(target => target.IsBot && target.FactionHostile &&
                 target.Actor.Node == actor.Node && target.Actor.Valid);
             if (rogue is not null && Emit(brain, new BotIncident("rogue", actor.Node, rogue.Actor.Key)))
-            { brain.NextReport = Later(200); return; }
+            { brain.NextReport = Later(_memory.RogueReportCooldown); return; }
         }
         // Background breach preparation precedes combat, но movement/device actions остаются после него.
         goal = brain.Goals.FirstOrDefault();
@@ -103,7 +103,7 @@ public sealed partial class BotEngine
                 brain.State = "команда устройства";
                 var command = CommandStep(brain, goal, node, goal.Command ?? "scan");
                 if (command != 1 || goal.Kind != "survey") return command;
-                var response = Truncate(brain.Result?.Response ?? "", 1000);
+                var response = Truncate(brain.Result?.Response ?? "", _tuning.ReportTruncateChars);
                 ClearResult(brain);
                 Emit(brain, new BotStoreReport($"survey-{node.Key.NodeId}.txt", $"{node.Key.NodeId}\n{response}"), goal);
                 return 0;
@@ -208,8 +208,8 @@ public sealed partial class BotEngine
     /// <summary>Только фактический failed frontier попадает в минутный blacklist, отмена — нет.</summary>
     private int HackFailure(Brain brain, BotNodeFact target, BotNodeFact frontier)
     {
-        brain.Blacklist.Put(frontier.Key, Later(600));
-        if (frontier.Key != target.Key) brain.Blacklist.Put(target.Key, Later(600));
+        brain.Blacklist.Put(frontier.Key, Later(_memory.HackBlacklist));
+        if (frontier.Key != target.Key) brain.Blacklist.Put(target.Key, Later(_memory.HackBlacklist));
         return 2;
     }
 
@@ -221,13 +221,13 @@ public sealed partial class BotEngine
         {
             var completed = brain.Result?.Phase == "completed";
             ClearResult(brain);
-            if (!completed) { brain.Blacklist.Put(node.Key, Later(600)); return 2; }
+            if (!completed) { brain.Blacklist.Put(node.Key, Later(_memory.HackBlacklist)); return 2; }
             brain.AwaitFactRevision = brain.Fact.Revision;
             return 0;
         }
         var cargo = brain.Fact.Context.Cargo.FirstOrDefault();
         if (cargo is null) return 1;
-        if (!AcceptsCargo(brain, node)) { brain.Blacklist.Put(node.Key, Later(600)); return 2; }
+        if (!AcceptsCargo(brain, node)) { brain.Blacklist.Put(node.Key, Later(_memory.HackBlacklist)); return 2; }
         if (node.Key != brain.Fact.Actor.Node) return Approach(brain, node, goal) == 2 ? 2 : 0;
         brain.State = "разгрузка обломков";
         return CommandStep(brain, goal, node, "file.deposit", cargo.Uid);
@@ -278,16 +278,16 @@ public sealed partial class BotEngine
         if (suspect is not null)
         {
             goal.Engaged = true; goal.ArrivedAt = _now;
-            if (suspect.IsBot) brain.Enemies.Put(suspect.Actor.Key, Later(600));
+            if (suspect.IsBot) brain.Enemies.Put(suspect.Actor.Key, Later(_memory.EnemyMemory));
             else if (brain.Warned.Get(suspect.Actor.Key) is not { } warned)
             {
-                if (Emit(brain, new BotWarning(suspect.Actor.Key, "police_leave", Later(50)), goal))
+                if (Emit(brain, new BotWarning(suspect.Actor.Key, "police_leave", Later(_memory.PoliceWarning)), goal))
                     brain.Warned.Put(suspect.Actor.Key, _now);
             }
-            else if (_now - warned >= 50) brain.Enemies.Put(suspect.Actor.Key, Later(600));
+            else if (_now - warned >= _memory.PoliceWarning) brain.Enemies.Put(suspect.Actor.Key, Later(_memory.EnemyMemory));
             return 0;
         }
-        if (_now - goal.ArrivedAt < 80) return 0;
+        if (_now - goal.ArrivedAt < _memory.InvestigationSettle) return 0;
         return ReportIncident(brain, goal, incident, goal.Engaged ? "нарушитель обезврежен или покинул узел" : "нарушений не обнаружено");
     }
 
@@ -302,9 +302,9 @@ public sealed partial class BotEngine
         if (node.AccessLevel < 2) return QueueFrontierHack(brain, node) ? 0 : 2;
         if (goal.DisruptAt == 0)
         {
-            if (!node.RaidEligible || _now < node.RaidReadyAtDs || _now < brain.Fact.Context.NextInvasionDs || brain.Fact.Context.ActiveInvasions >= 2)
+            if (!node.RaidEligible || _now < node.RaidReadyAtDs || _now < brain.Fact.Context.NextInvasionDs || brain.Fact.Context.ActiveInvasions >= _tuning.MaxActiveInvasions)
                 return 2;
-            if (Emit(brain, new BotSabotage(node.Key, false, Later(300)), goal)) goal.DisruptAt = Later(300);
+            if (Emit(brain, new BotSabotage(node.Key, false, Later(_tuning.SabotageHoldDs)), goal)) goal.DisruptAt = Later(_tuning.SabotageHoldDs);
             return 0;
         }
         brain.State = "удержание узла";
@@ -326,7 +326,7 @@ public sealed partial class BotEngine
         if (brain.Pending is not null || _effects.Count >= _options.MaxEffects || brain.ActionSerial == ulong.MaxValue) return false;
         var actor = brain.Fact.Actor;
         var effect = new BotEffect(brain.Fact.Key, actor.Actor, ++brain.ActionSerial, actor.Revision,
-            actor.ResidenceRevision, actor.Node, action, deadline ?? Later(300));
+            actor.ResidenceRevision, actor.Node, action, deadline ?? Later(_memory.DefaultActionDeadline));
         brain.Pending = effect;
         brain.PendingGoal = goal?.Serial ?? 0;
         brain.HandedOff = false;
@@ -347,10 +347,10 @@ public sealed partial class BotEngine
                 if (!completed && goal is not null) Finish(brain, goal, false);
                 break;
             case BotNavigate when !completed:
-                if (goal is not null) { if (goal.Target is { } target) brain.Blacklist.Put(target, Later(1200)); Finish(brain, goal, false); }
+                if (goal is not null) { if (goal.Target is { } target) brain.Blacklist.Put(target, Later(_memory.HopBlacklist)); Finish(brain, goal, false); }
                 break;
             case BotNavigate when brain.FleeFrom is { } previous:
-                brain.Blacklist.Put(previous, Later(300)); brain.FleeFrom = null; break;
+                brain.Blacklist.Put(previous, Later(_memory.FleeBlacklist)); brain.FleeFrom = null; break;
             case BotCombat { Intent: UseCombatProgram use } when completed:
                 if (_programs.GetValueOrDefault(use.ProgramId)?.Role == "stun") brain.ControlledTarget = use.Target;
                 break;
@@ -431,7 +431,7 @@ public sealed partial class BotEngine
                     !(goal?.Kind is "guard" or "recycling_wait" && goal.Target == actor.Node))
                 {
                     var cadence = brain.InCombat ? brain.Profile.ThinkCombatDs : brain.Goals.Count > 0 ? brain.Profile.ThinkBusyDs : brain.Profile.ThinkIdleDs;
-                    next = Math.Min(next, Later(Math.Max(1, cadence + Random(brain, -5, 6))));
+                    next = Math.Min(next, Later(Math.Max(1, cadence + Random(brain, -_tuning.ThinkJitterDs, _tuning.ThinkJitterDs + 1))));
                 }
             }
         }

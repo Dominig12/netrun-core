@@ -1,4 +1,5 @@
 using Netrun.Core;
+using Netrun.Core.Access;
 using Netrun.Core.Entities;
 using Netrun.Core.Entities.Bots;
 using Netrun.Core.Runtime;
@@ -7,13 +8,15 @@ using Xunit;
 
 namespace Netrun.Tests;
 
-/// <summary>Проверяет, что BotEngine подключён к рантайму: команды идут через общую FIFO, мышление в Pump, решения на выход.</summary>
+/// <summary>Проверяет, что BotEngine подключён к рантайму через ConfigureBot: Core строит восприятие из
+/// собственной сущности бота и графа, мышление идёт в Pump, а решения выходят наружу общей FIFO.</summary>
 public sealed class RuntimeBotTests
 {
     private static readonly Epochs Epochs = new("world", "engine", "binding");
-    private static readonly NodeKey Home = new("home", 1);
     private static readonly ActorKey Actor = new("actor", 1);
     private static readonly BotKey Bot = new("brain", 1);
+    /// <summary>Настоящий узел опубликованного графа, на котором живёт сущность бота.</summary>
+    private static readonly NodeKey Spot = new("a", 1);
 
     /// <summary>Полный node-факт снапшота станции для настоящего topology builder.</summary>
     private static NodeFact WorldNode(string id, int x, string type = "server") =>
@@ -26,28 +29,12 @@ public sealed class RuntimeBotTests
         new NodeUpsert(WorldNode("apc", 1, "apc")), new NodeUpsert(WorldNode("a", 2)), new NodeUpsert(WorldNode("b", 3))
     ];
 
-    /// <summary>Read-model EntityWorld, который DM кладёт в факт бота; HP/residence остаются у ядра сущностей.</summary>
-    private static EntityView View(ActorKey? actor = null, NodeKey? node = null, ulong revision = 1) =>
-        new(actor ?? Actor, revision, revision, EntityKind.Bot, node ?? Home, 100, 100, new("Bot"),
-            "owner", "principal", "custom", true, 0, 0, 1, 0, true, null, null);
+    /// <summary>Минимальный валидный access snapshot: identity принципала без выданных узловых прав.</summary>
+    private static EntityAccessSnapshot Access() =>
+        new(new EntityPrincipalFacts("session", "principal", new([])), new([]), new([]), new([]), new([]), new([]));
 
-    /// <summary>ACL/маршрутные факты узла уже вычислены Core owner; DM не задаёт готовое решение brain.</summary>
-    private static BotNodeFact BotNode(string id = "home", string? network = "lan", string type = "server") =>
-        new(new(id, 1), network, type)
-        {
-            AccessLevel = 2,
-            NetworkLevel = 1,
-            DirectEntry = id == "home",
-            CanTraverse = true,
-            CanPlanVisit = true,
-            CanRoute = true,
-            RouteCost = id == "home" ? 0 : 1,
-            Commands = new(["scan", "toggle", "fort_repair"])
-        };
-
-    /// <summary>Минимальный факт бота со штатным профилем и одним домашним узлом.</summary>
-    private static BotFact Fact(ulong revision = 1) =>
-        new(Bot, revision, View(), "custom", new() { Home = Home, Nodes = new([BotNode()]) });
+    /// <summary>Сырые идентичности и credentials бота; восприятие Core вычисляет сам из сущности и графа.</summary>
+    private static BotConfiguration Config() => new(Bot, Actor, "custom", Access(), Home: Spot);
 
     private static RuntimeInput Input(ulong sequence, RuntimeCommand command) => new(Epochs, sequence, 0, command);
 
@@ -68,56 +55,72 @@ public sealed class RuntimeBotTests
         return 5;
     }
 
-    /// <summary>Факт восприятия и приказ владельца приводят к одному native-решению brain, выданному наружу рантаймом.</summary>
-    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
-    public void BotFactAndOrderDriveACoreDecisionThroughTheRuntime()
+    /// <summary>Создаёт автономную сущность-бота в EntityWorld ядра и прогоняет её в live-состояние.</summary>
+    private static ulong CreateBot(NetworkRuntime runtime, ulong sequence)
+    {
+        var operation = new EntityOperation(new RequestKey("entity.fixture", 1), Actor, null,
+            new CreateEntity(new EntityDefinition(Actor, EntityKind.Bot, Spot, 100, new("Bot"), "owner",
+                ProfileId: "custom", Autonomous: true)));
+        Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(Input(sequence++, new SubmitEntityOperation(operation))).Admission!.Status);
+        for (var i = 0; i < 4; i++) runtime.Pump();
+        Assert.Equal(EntityKind.Bot, runtime.ReadEntity(Actor)!.Kind);
+        return sequence;
+    }
+
+    /// <summary>Конфигурация бота и приказ владельца приводят к одному native-решению brain, выданному наружу рантаймом.</summary>
+    [Fact]
+    public void ConfiguredBotAndOrderDriveACoreDecisionThroughTheRuntime()
     {
         using var runtime = new NetworkRuntime(Epochs);
         var sequence = Publish(runtime);
-        Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(Input(sequence++, new PublishBotFact(new("bot-fact", 1), Fact()))).Admission!.Status);
+        sequence = CreateBot(runtime, sequence);
+        Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(Input(sequence++, new ConfigureBot(new("bot-config", 1), Config()))).Admission!.Status);
+        // Приказ terminate — presentation-решение (dissolve), не зависящее от device-command восприятия узла.
         Assert.Equal(AdmissionStatus.Accepted,
-            runtime.Apply(Input(sequence++, new SubmitBotOrder(new("bot-order", 1), Bot, new BotOrder("command", Home, "toggle")))).Admission!.Status);
+            runtime.Apply(Input(sequence++, new SubmitBotOrder(new("bot-order", 1), Bot, new BotOrder("terminate")))).Admission!.Status);
 
         BotNativeDecision? decision = null;
         for (var attempt = 0; attempt < 64 && decision is null; attempt++)
         {
             runtime.Pump();
             while (decision is null && runtime.TryDequeueEvent(out var output))
-                if (output is BotNativeDecision found) decision = found;
+                if (output is BotNativeDecision { Effect.Action: BotDissolve } found) decision = found;
         }
 
         Assert.NotNull(decision);
         Assert.Equal(Bot, decision!.Effect.Bot);
-        var command = Assert.IsType<BotCommand>(decision.Effect.Action);
-        Assert.Equal("toggle", command.CommandId);
+        var dissolve = Assert.IsType<BotDissolve>(decision.Effect.Action);
+        Assert.Equal("terminated", dissolve.Code);
 
         var result = new BotEffectResult(decision.Effect.Bot, decision.Effect.Actor,
             decision.Effect.ActionSerial, decision.Effect.ExpectedRevision, "completed");
         Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(Input(sequence, new FinishBotEffect(new("bot-finish", 1), result))).Admission!.Status);
     }
 
-    /// <summary>Повтор того же PublishBotFact на прежнем sequence распознаётся replay-леджером как дубликат.</summary>
-    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
-    public void PublishBotFactReplayIsDeduplicated()
+    /// <summary>Повтор того же ConfigureBot на прежнем sequence распознаётся replay-леджером как дубликат.</summary>
+    [Fact]
+    public void ConfigureBotReplayIsDeduplicated()
     {
         using var runtime = new NetworkRuntime(Epochs);
         var sequence = Publish(runtime);
-        var publish = Input(sequence, new PublishBotFact(new("bot-fact", 1), Fact()));
-        Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(publish).Admission!.Status);
-        Assert.Equal(ApplyStatus.Duplicate, runtime.Apply(publish).Apply.Status);
+        sequence = CreateBot(runtime, sequence);
+        var configure = Input(sequence, new ConfigureBot(new("bot-config", 1), Config()));
+        Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(configure).Admission!.Status);
+        Assert.Equal(ApplyStatus.Duplicate, runtime.Apply(configure).Apply.Status);
     }
 
-    /// <summary>Без ботов четвёртый автоматический lane — no-op: публикация и удаление не ломают world-only прогон.</summary>
-    [Fact(Skip = "Pending port to the ConfigureBot contract: Core now computes bot perception from raw facts; the external PublishBotFact perception path is retired.")]
+    /// <summary>Удаление единственного бота оставляет рантайм исправным: четвёртый автоматический lane — no-op.</summary>
+    [Fact]
     public void RemovingTheOnlyBotLeavesRuntimeHealthy()
     {
         using var runtime = new NetworkRuntime(Epochs);
         var sequence = Publish(runtime);
-        runtime.Apply(Input(sequence++, new PublishBotFact(new("bot-fact", 1), Fact())));
-        for (var i = 0; i < 4; i++) runtime.Pump();
+        sequence = CreateBot(runtime, sequence);
+        runtime.Apply(Input(sequence++, new ConfigureBot(new("bot-config", 1), Config())));
+        for (var i = 0; i < 8; i++) runtime.Pump();
         Assert.Equal(1, runtime.BotCount);
         Assert.Equal(AdmissionStatus.Accepted, runtime.Apply(Input(sequence++, new RemoveBot(new("bot-remove", 1), Bot))).Admission!.Status);
-        for (var i = 0; i < 4; i++) runtime.Pump();
+        for (var i = 0; i < 8; i++) runtime.Pump();
         Assert.Equal(0, runtime.BotCount);
         Assert.Equal(MirrorSyncState.Ready, runtime.State);
     }

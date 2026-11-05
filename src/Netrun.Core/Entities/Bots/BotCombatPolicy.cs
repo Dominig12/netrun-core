@@ -36,9 +36,9 @@ public sealed partial class BotEngine
         var self = new BotTargetFact(new(actor.Actor, actor.Node, actor.Integrity, actor.MaxIntegrity,
             new(brain.Fact.Context.Executables.Select(file => file.ProgramId)), InitialShieldFactor: actor.ShieldFactor,
             InitialShieldUntilDs: actor.ShieldUntilDs, InitialStunUntilDs: actor.StunnedUntilDs), actor.FactionId, actor.PrincipalId);
-        if (ratio < 0.5 && _now >= actor.ShieldUntilDs && UseRole(brain, "shield", self)) return true;
-        if (ratio < 0.4 && UseRole(brain, "repair", self)) return true;
-        var strikePower = _programs.GetValueOrDefault("strike")?.Power ?? 22;
+        if (ratio < _combatTuning.ShieldIntegrityRatio && _now >= actor.ShieldUntilDs && UseRole(brain, "shield", self)) return true;
+        if (ratio < _combatTuning.RepairIntegrityRatio && UseRole(brain, "repair", self)) return true;
+        var strikePower = _programs.GetValueOrDefault("strike")?.Power ?? _combatTuning.StrikePowerFallback;
         if (encounter is not null && target.Actor.Integrity > strikePower && target.Actor.Key != brain.ControlledTarget && UseRole(brain, "stun", target))
             return true;
         if (target.Actor.Kind == CombatActorKind.Ice && target.PendingProgram && UseRole(brain, "stun", target)) return true;
@@ -51,8 +51,8 @@ public sealed partial class BotEngine
             }
             else
             {
-                if (Emit(brain, new BotWarning(target.Actor.Key, "attack_telegraph", Later(20))))
-                { brain.PendingAttack = target.Actor.Key; brain.AttackAt = Later(20); }
+                if (Emit(brain, new BotWarning(target.Actor.Key, "attack_telegraph", Later(_memory.AttackTelegraph))))
+                { brain.PendingAttack = target.Actor.Key; brain.AttackAt = Later(_memory.AttackTelegraph); }
                 return true;
             }
         }

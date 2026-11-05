@@ -5,8 +5,10 @@ namespace Netrun.Core.Entities.Combat;
 /// <summary>Единственный последовательный owner очередей боя; не содержит DM/native callbacks и не владеет HP registry.</summary>
 public sealed class CombatSimulation
 {
-    /// <summary>Точные константы turn_combat.dm: три AP, двенадцать секунд и три полных тихих раунда.</summary>
-    public const int MaximumAp = 3, DecisionTimeDs = 120, IdleRounds = 3;
+    /// <summary>Фундаментальная const turn_combat.dm: три AP на ход (используется в compile-time паттернах).</summary>
+    public const int MaximumAp = 3;
+    /// <summary>Настраиваемые тайминги; штатные значения повторяют turn_combat.dm (двенадцать секунд, три тихих раунда).</summary>
+    private readonly CombatOptions _options;
 
     private sealed class Actor(CombatActorFact fact)
     {
@@ -59,8 +61,13 @@ public sealed class CombatSimulation
     private long _now;
 
     /// <summary>Создаёт изолированную симуляцию; explicit definitions могут включать доверенные полиморфные программы.</summary>
-    public CombatSimulation(IEnumerable<CombatProgram>? programs = null)
+    public CombatSimulation(IEnumerable<CombatProgram>? programs = null, CombatOptions? options = null)
     {
+        _options = options ?? new();
+        if (_options.DecisionTimeDs < 1 || _options.IdleRounds < 1 || _options.TelegraphInCombatDs < 0 ||
+            _options.TelegraphMinDs < 0 || _options.GlobalProgramCooldownDs < 0 || _options.EntityWakeDs < 0 ||
+            _options.AdvancePassesPerParticipant < 1 || !double.IsFinite(_options.MaximumDamageScale) || _options.MaximumDamageScale < 1)
+            throw new ArgumentException("Invalid combat options.", nameof(options));
         foreach (var program in programs ?? CombatPrograms.CreateDefaults())
         {
             if (string.IsNullOrWhiteSpace(program.Id) || program.Id.Length > 128 ||
@@ -208,7 +215,7 @@ public sealed class CombatSimulation
 
     private bool SetTime(long now)
     {
-        if (now < _now || now < 0 || now > long.MaxValue - DecisionTimeDs - 1000000) return false;
+        if (now < _now || now < 0 || now > long.MaxValue - _options.DecisionTimeDs - 1000000) return false;
         _now = now;
         return true;
     }
@@ -331,7 +338,7 @@ public sealed class CombatSimulation
         if (!Accepts(actor, use.Token)) return new(false, "stale_decision");
         if (!_programs.TryGetValue(use.ProgramId, out var program) || !actor.Fact.Programs.Contains(use.ProgramId) ||
             actor.Fact.Kind != CombatActorKind.Ice && !program.ConsoleUsable) return new(false, "program_unavailable");
-        if (!double.IsFinite(use.DamageScale) || use.DamageScale < 0 || use.DamageScale > 1000) return new(false, "invalid_damage_scale");
+        if (!double.IsFinite(use.DamageScale) || use.DamageScale < 0 || use.DamageScale > _options.MaximumDamageScale) return new(false, "invalid_damage_scale");
         if (actor.Cast is not null || actor.StunUntil > _now) return new(false, "actor_busy");
         var wasInCombat = actor.Encounter is { Active: true };
         if (wasInCombat ? CooldownRemaining(actor.Fact.Key, program.Id) > 0 : _now < actor.NextProgram || _now < actor.WallCooldowns.GetValueOrDefault(program.Id))
@@ -350,7 +357,7 @@ public sealed class CombatSimulation
         if (program.Hostile) _effects.Enqueue(new(CombatEffectKind.Reveal, actor.Fact.Key, ProgramId: program.Id));
         if (use.Telegraph)
         {
-            var telegraph = wasInCombat ? 5 : Math.Max(20, program.WindupDs);
+            var telegraph = wasInCombat ? _options.TelegraphInCombatDs : Math.Max(_options.TelegraphMinDs, program.WindupDs);
             var cast = new Cast(program, target.Fact.Key, use.DamageScale, _now + telegraph, ++actor.CastGeneration, use.ExecutableId);
             actor.Cast = cast;
             if (!_targetCasts.TryGetValue(target.Fact.Key, out var sources)) _targetCasts.Add(target.Fact.Key, sources = []);
@@ -361,7 +368,7 @@ public sealed class CombatSimulation
             _effects.Enqueue(new(CombatEffectKind.CastStarted, actor.Fact.Key, target.Fact.Key, UntilDs: cast.Due, ProgramId: program.Id));
             return new(true, "casting");
         }
-        actor.NextProgram = _now + 5;
+        actor.NextProgram = _now + _options.GlobalProgramCooldownDs;
         actor.WallCooldowns[program.Id] = _now + program.CooldownDs;
         Deliver(actor, target, program, use.DamageScale);
         Resolve(actor);
@@ -427,7 +434,7 @@ public sealed class CombatSimulation
         if (!cast.Program.CanApply(Context(actor, target, cast.DamageScale))) return CancelCastIntent(actor);
         if (_now < cast.Due) return new(false, "cast_pending");
         CancelCast(actor, resolve: false, code: "resolved");
-        actor.NextProgram = _now + 5;
+        actor.NextProgram = _now + _options.GlobalProgramCooldownDs;
         Deliver(actor, target, cast.Program, cast.DamageScale);
         Resolve(actor);
         return new(true, "resolved");
@@ -499,7 +506,7 @@ public sealed class CombatSimulation
         encounter.Deferred = false;
         if (encounter.Current is { RealTurn: true } outgoing) outgoing.StunImmune = false;
         encounter.Advancing = true;
-        encounter.AdvanceRemaining = Math.Max(1, encounter.Participants.Count * 2);
+        encounter.AdvanceRemaining = Math.Max(1, encounter.Participants.Count * _options.AdvancePassesPerParticipant);
         _advancing.Enqueue(encounter);
     }
 
@@ -512,7 +519,7 @@ public sealed class CombatSimulation
             encounter.CurrentIndex = 0;
             encounter.QuietRounds = encounter.RoundHadCombat ? 0 : encounter.QuietRounds + 1;
             encounter.RoundHadCombat = false;
-            if (encounter.QuietRounds >= IdleRounds) { Close(encounter); return; }
+            if (encounter.QuietRounds >= _options.IdleRounds) { Close(encounter); return; }
             encounter.Round++;
         }
         var participant = encounter.Current!;
@@ -530,7 +537,7 @@ public sealed class CombatSimulation
     private void FinishAdvance(Encounter encounter)
     {
         encounter.Advancing = false;
-        encounter.Deadline = _now + DecisionTimeDs;
+        encounter.Deadline = _now + _options.DecisionTimeDs;
         encounter.Generation++;
         _scheduled.Enqueue(new(encounter, null, encounter.Generation), (encounter.Deadline, ++_scheduleSerial));
         Changed(encounter);
@@ -599,7 +606,7 @@ public sealed class CombatSimulation
     }
 
     private void Wake(Actor actor) => _effects.Enqueue(new(CombatEffectKind.Wake, actor.Fact.Key,
-        Value: actor.Fact.Kind == CombatActorKind.Entity ? 5 : 0));
+        Value: actor.Fact.Kind == CombatActorKind.Entity ? _options.EntityWakeDs : 0));
     private void Changed(Encounter encounter)
     {
         if (encounter.Current is { } participant)

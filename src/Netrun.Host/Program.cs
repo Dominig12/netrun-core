@@ -43,8 +43,10 @@ try
             ? configuredPlugins.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : [];
         using var plugins = PluginLoader.Load(pluginPaths);
+        // Необязательный тюнинг симуляции из JSON; отсутствие файла сохраняет штатные значения.
+        var (combat, bots) = TuningConfig.FromEnvironment();
         await using var host = new LoopbackHost(new(port, token),
-            new RuntimeHostSessionFactory(new RuntimeOptions(Plugins: plugins.Plugins)), diagnostics);
+            new RuntimeHostSessionFactory(new RuntimeOptions(Plugins: plugins.Plugins, Combat: combat, Bots: bots)), diagnostics);
         Console.Out.WriteLine($"NETRUN Host listening on loopback:{host.Port}");
         await host.RunAsync(shutdown.Token);
         return 0;

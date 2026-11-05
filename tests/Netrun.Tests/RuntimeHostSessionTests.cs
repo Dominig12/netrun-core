@@ -483,7 +483,8 @@ public sealed class RuntimeHostSessionTests
             ack = Counter(root, "output_sequence");
             Assert.Equal(inputs[^1].Sequence, Counter(root, "applied_sequence"));
             var entries = root.GetProperty("results").EnumerateArray().ToArray();
-            Assert.InRange(entries.Count(entry => entry.GetProperty("kind").GetString() != "runtime_result"), 0, 8);
+            // MaximumEventsPerReply поднят до 512: весь native burst этих 16 команд может прийти одним ответом.
+            Assert.InRange(entries.Count(entry => entry.GetProperty("kind").GetString() != "runtime_result"), 0, 16);
             var results = entries.Where(entry => entry.GetProperty("kind").GetString() == "runtime_result").ToArray();
             if (admissions)
             {

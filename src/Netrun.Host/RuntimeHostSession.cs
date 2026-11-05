@@ -10,7 +10,7 @@ namespace Netrun.Host;
 public sealed class RuntimeHostSession : IMonitoredHostSession
 {
     /// <summary>Bounded native apply burst: не более 256 projection rows за ответ, независимо от числа команд.</summary>
-    private const int MaximumEventsPerReply = 8;
+    private const int MaximumEventsPerReply = 512;
     /// <summary>Идентичность одного соединения; poll не может изменить binding или engine.</summary>
     private readonly Epochs _epochs;
     /// <summary>Единственный mutable владелец mirror, graph, routes и packets.</summary>

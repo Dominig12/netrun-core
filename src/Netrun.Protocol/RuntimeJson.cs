@@ -32,13 +32,13 @@ public sealed record RuntimeInputBatch(IReadOnlyList<RuntimeInput> Inputs, ulong
 /// <param name="Epochs">Идентичность выбранного binding.</param>
 /// <param name="AckOutputSequence">Cumulative ACK обработки выходов DM.</param>
 /// <param name="MaxEvents">Максимум забираемых событий, 0..128.</param>
-public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int MaxEvents = 64) : RuntimeMessage(Epochs, AckOutputSequence);
+public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int MaxEvents = 512) : RuntimeMessage(Epochs, AckOutputSequence);
 
 /// <summary>Строгая runtime-схема v1.3; команды не смешиваются с world facts внутри одного атомарного frame.</summary>
 public static partial class RuntimeJson
 {
     /// <summary>Согласуемый hello_ack предел команд; не увеличивает бюджет Pump или native events.</summary>
-    public const int MaxInputCommands = 16;
+    public const int MaxInputCommands = 512;
     /// <summary>
     /// Структурный JSON parser ограничен числом пар скобок внутри заранее ограниченного 1-MiB frame.
     /// Payload глубже 32 остаётся valid JSON и получает message-level отказ вместо закрытия binding.

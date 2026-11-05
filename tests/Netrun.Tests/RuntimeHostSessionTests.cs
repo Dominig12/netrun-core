@@ -672,7 +672,8 @@ public sealed class RuntimeHostSessionTests
             using var document = JsonDocument.Parse(body);
             var results = document.RootElement.GetProperty("results").EnumerateArray().ToArray();
             Assert.Equal(diagnostic ? 1 : 0, results.Count(entry => entry.GetProperty("kind").GetString() == "runtime_result"));
-            Assert.InRange(results.Length, diagnostic ? 1 : 0, diagnostic ? 9 : 8);
+            // MaximumEventsPerReply поднят до 512: вся проекция (до 66 страниц по строке) помещается в один ответ.
+            Assert.InRange(results.Length, diagnostic ? 1 : 0, diagnostic ? 67 : 66);
             foreach (var page in results.Where(entry => entry.GetProperty("kind").GetString() == "projection_page"))
             {
                 Assert.Equal("ui:1", page.GetProperty("request_id").GetString());

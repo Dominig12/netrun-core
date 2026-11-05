@@ -164,7 +164,7 @@ public sealed class RuntimeProtocolTests
         var valid = Encoding.UTF8.GetString(RuntimeJson.EncodePoll(Epochs, 0));
         foreach (var invalid in new[]
         {
-            valid.Replace("\"max_events\":64", "\"max_events\":129", StringComparison.Ordinal),
+            valid.Replace("\"max_events\":64", "\"max_events\":513", StringComparison.Ordinal),
             valid.Replace("\"max_events\":64", "\"max_events\":-1", StringComparison.Ordinal),
             valid.Replace("\"max_events\":64", "\"max_events\":\"64\"", StringComparison.Ordinal),
             valid.Replace("\"ack_output_sequence\":\"0\"", "\"ack_output_sequence\":0", StringComparison.Ordinal),

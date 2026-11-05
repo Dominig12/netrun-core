@@ -31,7 +31,7 @@ public sealed record RuntimeInputBatch(IReadOnlyList<RuntimeInput> Inputs, ulong
 /// <summary>Чтение уже готовых выходов; не является входом игрового clock или фактов.</summary>
 /// <param name="Epochs">Идентичность выбранного binding.</param>
 /// <param name="AckOutputSequence">Cumulative ACK обработки выходов DM.</param>
-/// <param name="MaxEvents">Максимум забираемых событий, 0..128.</param>
+/// <param name="MaxEvents">Максимум забираемых событий, 0..512 (поднято с 128 под MaximumEventsPerReply).</param>
 public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int MaxEvents = 512) : RuntimeMessage(Epochs, AckOutputSequence);
 
 /// <summary>Строгая runtime-схема v1.3; команды не смешиваются с world facts внутри одного атомарного frame.</summary>
@@ -68,7 +68,7 @@ public static partial class RuntimeJson
                     if (Text(kind, 32) != "poll") throw Schema();
                     Fields(root, "kind", "world_epoch", "engine_epoch", "binding_epoch", "ack_output_sequence", "max_events");
                     return new RuntimePoll(ReadEpochs(root), Counter(root.GetProperty("ack_output_sequence"), true),
-                        Integer(root.GetProperty("max_events"), 0, 128));
+                        Integer(root.GetProperty("max_events"), 0, 512));
                 }
             }
             if (grouped) Fields(root, "kind", "protocol_major", "protocol_minor", "world_epoch", "engine_epoch", "binding_epoch", "sequence",

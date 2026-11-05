@@ -46,7 +46,11 @@ public sealed class RuntimeProtocolTests
             body[..^1] + ",\"extra\":true}"
         }) Assert.Throws<ProtocolException>(() => RuntimeJson.Decode(Encoding.UTF8.GetBytes(invalid)));
         Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch(inputs[..1]));
-        Assert.Throws<ProtocolException>(() => RuntimeJson.EncodeBatch([.. inputs, inputs[^1]]));
+        // Снятый под-потолок 16: 17 команд теперь валидны; реальная стена grouped-кадра — BatchJson.MaxEntries.
+        Assert.IsType<RuntimeInputBatch>(RuntimeJson.Decode(RuntimeJson.EncodeBatch([.. inputs, inputs[^1] with { Sequence = inputs[^1].Sequence + 1 }])));
+        var full = Enumerable.Range(0, BatchJson.MaxEntries).Select(index => new RuntimeInput(Epochs,
+            16777217UL + (ulong)index, 15, new ConfigureBackbone(index % 2 == 0))).ToArray();
+        Assert.IsType<RuntimeInputBatch>(RuntimeJson.Decode(RuntimeJson.EncodeBatch(full)));
         foreach (var second in new[]
         {
             inputs[1] with { Sequence = inputs[0].Sequence },
@@ -59,7 +63,9 @@ public sealed class RuntimeProtocolTests
             inputs[0] with { Sequence = ulong.MaxValue }, inputs[1] with { Sequence = 0 }]));
         var finalCounters = new[] { inputs[0] with { Sequence = ulong.MaxValue - 1 }, inputs[1] with { Sequence = ulong.MaxValue } };
         Assert.Equal(finalCounters, Assert.IsType<RuntimeInputBatch>(RuntimeJson.Decode(RuntimeJson.EncodeBatch(finalCounters))).Inputs);
-        var tooMany = body.Replace("\"entries\":[", "\"entries\":[{\"kind\":\"backbone_configure\",\"enabled\":true},", StringComparison.Ordinal);
+        // Один лишний entry поверх полного кадра (MaxInputCommands) превышает frame entries wall и отвергается при decode.
+        var fullBody = Encoding.UTF8.GetString(RuntimeJson.EncodeBatch(full));
+        var tooMany = fullBody.Replace("\"entries\":[", "\"entries\":[{\"kind\":\"backbone_configure\",\"enabled\":true},", StringComparison.Ordinal);
         Assert.Throws<ProtocolException>(() => RuntimeJson.Decode(Encoding.UTF8.GetBytes(tooMany)));
     }
 

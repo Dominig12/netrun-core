@@ -37,7 +37,9 @@ public sealed record RuntimePoll(Epochs Epochs, ulong AckOutputSequence, int Max
 /// <summary>Строгая runtime-схема v1.3; команды не смешиваются с world facts внутри одного атомарного frame.</summary>
 public static partial class RuntimeJson
 {
-    /// <summary>Согласуемый hello_ack предел команд; не увеличивает бюджет Pump или native events.</summary>
+    /// <summary>Согласуемый hello_ack потолок команд в одном input-кадре (поднят с 16 до 512). Реальный предел
+    /// grouped-кадра — min(этого, BatchJson.MaxEntries): decode отвергает entries сверх MaxEntries (128).
+    /// Не увеличивает бюджет Pump или native events.</summary>
     public const int MaxInputCommands = 512;
     /// <summary>
     /// Структурный JSON parser ограничен числом пар скобок внутри заранее ограниченного 1-MiB frame.
